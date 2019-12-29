@@ -1,0 +1,10 @@
+C:\src\github\Treit\TerminalStress\src\bin\Debug\netcoreapp2.2\TerminalStress.deps.json
+C:\src\github\Treit\TerminalStress\src\bin\Debug\netcoreapp2.2\TerminalStress.runtimeconfig.json
+C:\src\github\Treit\TerminalStress\src\bin\Debug\netcoreapp2.2\TerminalStress.runtimeconfig.dev.json
+C:\src\github\Treit\TerminalStress\src\bin\Debug\netcoreapp2.2\TerminalStress.dll
+C:\src\github\Treit\TerminalStress\src\bin\Debug\netcoreapp2.2\TerminalStress.pdb
+C:\src\github\Treit\TerminalStress\src\obj\Debug\netcoreapp2.2\TerminalStress.csprojAssemblyReference.cache
+C:\src\github\Treit\TerminalStress\src\obj\Debug\netcoreapp2.2\TerminalStress.AssemblyInfoInputs.cache
+C:\src\github\Treit\TerminalStress\src\obj\Debug\netcoreapp2.2\TerminalStress.AssemblyInfo.cs
+C:\src\github\Treit\TerminalStress\src\obj\Debug\netcoreapp2.2\TerminalStress.dll
+C:\src\github\Treit\TerminalStress\src\obj\Debug\netcoreapp2.2\TerminalStress.pdb
