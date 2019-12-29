@@ -13,10 +13,11 @@
             Console.OutputEncoding = Encoding.UTF8;
 
             string s = string.Empty;
+            string file = Environment.ExpandEnvironmentVariables(@"%temp%\terminal_stress_repro.txt");
 
             while (true)
             {
-                using (var fs = new FileStream(@"c:\temp\repro.txt", FileMode.Create))
+                using (var fs = new FileStream(file, FileMode.Create))
                 using (var sw = new StreamWriter(fs, Encoding.Unicode))
                 {
                     char c = (char)r.Next(0xD100, 0xFA95);
