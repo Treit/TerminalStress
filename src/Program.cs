@@ -17,15 +17,14 @@
 
             while (true)
             {
-                using (var fs = new FileStream(file, FileMode.Create))
-                using (var sw = new StreamWriter(fs, Encoding.Unicode))
-                {
-                    char c = (char)r.Next(0xD100, 0xFA95);
-                    s += c;
+                char c = (char)r.Next(0xD100, 0xFA95);
+                s += c;
 
-                    sw.WriteLine(s);
-                    sw.Flush();
-                    Console.WriteLine(s);
+                Console.WriteLine(s);
+
+                if (s.Length > 100_000)
+                {
+                    s = string.Empty;
                 }
             }
         }
