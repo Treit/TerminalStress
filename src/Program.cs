@@ -13,7 +13,6 @@
             Console.OutputEncoding = Encoding.UTF8;
 
             string s = string.Empty;
-            string file = Environment.ExpandEnvironmentVariables(@"%temp%\terminal_stress_repro.txt");
 
             while (true)
             {
