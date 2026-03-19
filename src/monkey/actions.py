@@ -25,10 +25,15 @@ logger = logging.getLogger("monkey")
 user32 = ctypes.windll.user32
 
 # Timing constants
-MIN_ACTION_DELAY = 0.05
-MAX_ACTION_DELAY = 0.3
+MIN_ACTION_DELAY = 0.01
+MAX_ACTION_DELAY = 0.15
 RESIZE_HOLD_REPEATS_MIN = 3
 RESIZE_HOLD_REPEATS_MAX = 30
+
+
+def _brief_sleep(max_ms: int = 150):
+    """Sleep for a randomized short duration, never more than 0.5s."""
+    time.sleep(random.uniform(0.01, min(max_ms / 1000.0, 0.5)))
 
 # Known-bug mitigations (overridden by known_bugs.json at catalog build time)
 _mitigations: dict[str, object] = {}
@@ -66,12 +71,20 @@ class Action(NamedTuple):
     func: Callable
 
 
+class FocusError(Exception):
+    """Raised when WT is not the foreground window and we can't fix it."""
+    pass
+
+
 def _ensure_focused(win):
-    """Forcefully bring the WT window to the foreground via SetForegroundWindow."""
+    """
+    Bring the WT window to the foreground and VERIFY it's actually focused.
+    Raises FocusError if WT cannot be focused, preventing input from going
+    to the wrong window.
+    """
+    hwnd = win.handle
     try:
-        hwnd = win.handle
         if user32.GetForegroundWindow() != hwnd:
-            # Attach to the foreground thread to bypass focus-stealing prevention
             fore_tid = user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), None)
             our_tid = ctypes.windll.kernel32.GetCurrentThreadId()
             if fore_tid != our_tid:
@@ -83,32 +96,34 @@ def _ensure_focused(win):
     except Exception:
         pass
 
+    # Verify focus was actually acquired
+    if user32.GetForegroundWindow() != hwnd:
+        raise FocusError("WT is not the foreground window, skipping action")
+
 
 def split_pane_right(win):
     """Split the current pane to the right (Alt+Shift+=)."""
     _ensure_focused(win)
     send_keys("%+{=}")
-    time.sleep(0.3)
+    _brief_sleep(200)
 
 
 def split_pane_down(win):
     """Split the current pane downward (Alt+Shift+-)."""
     _ensure_focused(win)
     send_keys("%+{-}")
-    time.sleep(0.3)
+    _brief_sleep(200)
 
 
 def close_pane(win):
     """Close the current pane (Ctrl+Shift+W), but open a new tab first to prevent closing WT."""
     _ensure_focused(win)
-    # Open a safety tab first so we never close the last one
     send_keys("^+t")
-    time.sleep(0.4)
-    # Switch back to the previous tab and close a pane there
+    _brief_sleep(200)
     send_keys("^+{TAB}")
-    time.sleep(0.2)
+    _brief_sleep(100)
     send_keys("^+w")
-    time.sleep(0.3)
+    _brief_sleep(150)
 
 
 def resize_pane_left(win):
@@ -151,83 +166,82 @@ def focus_pane_left(win):
     """Move focus to the left pane (Alt+Left)."""
     _ensure_focused(win)
     send_keys("%{LEFT}")
-    time.sleep(0.1)
+    _brief_sleep(50)
 
 
 def focus_pane_right(win):
     """Move focus to the right pane (Alt+Right)."""
     _ensure_focused(win)
     send_keys("%{RIGHT}")
-    time.sleep(0.1)
+    _brief_sleep(50)
 
 
 def focus_pane_up(win):
     """Move focus to the pane above (Alt+Up)."""
     _ensure_focused(win)
     send_keys("%{UP}")
-    time.sleep(0.1)
+    _brief_sleep(50)
 
 
 def focus_pane_down(win):
     """Move focus to the pane below (Alt+Down)."""
     _ensure_focused(win)
     send_keys("%{DOWN}")
-    time.sleep(0.1)
+    _brief_sleep(50)
 
 
 def new_tab(win):
     """Open a new tab (Ctrl+Shift+T)."""
     _ensure_focused(win)
     send_keys("^+t")
-    time.sleep(0.5)
+    _brief_sleep(300)
 
 
 def close_tab(win):
     """Close the current tab, but open a new one first to prevent closing WT."""
     _ensure_focused(win)
-    # Open a safety tab first so we never close the last one
     send_keys("^+t")
-    time.sleep(0.4)
-    # Switch back to the previous tab and close it
+    _brief_sleep(200)
     send_keys("^+{TAB}")
-    time.sleep(0.2)
+    _brief_sleep(100)
     send_keys("^+w")
-    time.sleep(0.3)
+    _brief_sleep(150)
 
 
 def next_tab(win):
     """Switch to the next tab (Ctrl+Tab)."""
     _ensure_focused(win)
     send_keys("^{TAB}")
-    time.sleep(0.2)
+    _brief_sleep(80)
 
 
 def prev_tab(win):
     """Switch to the previous tab (Ctrl+Shift+Tab)."""
     _ensure_focused(win)
     send_keys("^+{TAB}")
-    time.sleep(0.2)
+    _brief_sleep(80)
 
 
 def type_random_text(win):
-    """Type a random string of printable characters."""
+    """Type a random string of safe characters (no Tab or keys that could switch focus)."""
     _ensure_focused(win)
     length = random.randint(1, 80)
-    text = "".join(random.choices(string.printable, k=length))
+    safe_chars = string.ascii_letters + string.digits + string.punctuation + " "
+    text = "".join(random.choices(safe_chars, k=length))
     # Escape special pywinauto characters
     safe = text.replace("{", "{{").replace("}", "}}").replace("+", "{+}").replace("^", "{^}").replace("%", "{%}")
     try:
         send_keys(safe, pause=0.01)
     except Exception:
         pass
-    time.sleep(0.1)
+    _brief_sleep(50)
 
 
 def type_enter(win):
     """Press Enter."""
     _ensure_focused(win)
     send_keys("{ENTER}")
-    time.sleep(0.1)
+    _brief_sleep(50)
 
 
 def type_command(win):
@@ -249,7 +263,7 @@ def type_command(win):
     ]
     cmd = random.choice(commands)
     send_keys(cmd + "{ENTER}", pause=0.02)
-    time.sleep(0.2)
+    _brief_sleep(100)
 
 
 def scroll_up(win):
@@ -281,7 +295,7 @@ def resize_window(win):
         user32.MoveWindow(win.handle, new_x, new_y, new_width, new_height, True)
     except Exception as e:
         logger.warning(f"resize_window failed: {e}")
-    time.sleep(0.2)
+    _brief_sleep(100)
 
 
 def maximize_window(win):
@@ -291,7 +305,7 @@ def maximize_window(win):
         user32.ShowWindow(win.handle, 3)  # SW_MAXIMIZE
     except Exception:
         pass
-    time.sleep(0.2)
+    _brief_sleep(100)
 
 
 def minimize_restore_window(win):
@@ -299,18 +313,21 @@ def minimize_restore_window(win):
     _ensure_focused(win)
     try:
         user32.ShowWindow(win.handle, 6)  # SW_MINIMIZE
-        time.sleep(random.uniform(0.2, 1.0))
+        _brief_sleep(300)
         user32.ShowWindow(win.handle, 9)  # SW_RESTORE
+        # Re-verify focus after restore
+        time.sleep(0.1)
+        user32.SetForegroundWindow(win.handle)
     except Exception:
         pass
-    time.sleep(0.3)
+    _brief_sleep(150)
 
 
 def toggle_fullscreen(win):
     """Toggle fullscreen (F11)."""
     _ensure_focused(win)
     send_keys("{F11}")
-    time.sleep(0.5)
+    _brief_sleep(300)
 
 
 def zoom_in(win):
@@ -335,20 +352,19 @@ def zoom_reset(win):
     """Reset font size (Ctrl+0)."""
     _ensure_focused(win)
     send_keys("^0")
-    time.sleep(0.1)
+    _brief_sleep(50)
 
 
 def open_search(win):
     """Open the search dialog (Ctrl+Shift+F)."""
     _ensure_focused(win)
     send_keys("^+f")
-    time.sleep(0.3)
-    # Type something and close
+    _brief_sleep(200)
     text = "".join(random.choices(string.ascii_letters, k=random.randint(1, 20)))
     send_keys(text, pause=0.02)
-    time.sleep(0.2)
+    _brief_sleep(100)
     send_keys("{ESC}")
-    time.sleep(0.1)
+    _brief_sleep(50)
 
 
 def mouse_click_random(win):
@@ -361,7 +377,7 @@ def mouse_click_random(win):
         mouse.click(coords=(x, y))
     except Exception as e:
         logger.warning(f"mouse_click_random failed: {e}")
-    time.sleep(0.1)
+    _brief_sleep(50)
 
 
 def mouse_drag_random(win):
@@ -374,41 +390,40 @@ def mouse_drag_random(win):
         x2 = random.randint(rect.left + 10, max(rect.left + 11, rect.right - 10))
         y2 = random.randint(rect.top + 30, max(rect.top + 31, rect.bottom - 10))
         mouse.press(coords=(x1, y1))
-        time.sleep(0.05)
+        time.sleep(0.02)
         mouse.move(coords=(x2, y2))
-        time.sleep(0.05)
+        time.sleep(0.02)
         mouse.release(coords=(x2, y2))
     except Exception as e:
         logger.warning(f"mouse_drag_random failed: {e}")
-    time.sleep(0.1)
+    _brief_sleep(50)
 
 
 def copy_paste(win):
     """Copy selection then paste (Ctrl+Shift+C, Ctrl+Shift+V)."""
     _ensure_focused(win)
     send_keys("^+c")
-    time.sleep(0.1)
+    _brief_sleep(50)
     send_keys("^+v")
-    time.sleep(0.1)
+    _brief_sleep(50)
 
 
 def open_settings(win):
     """Open settings and immediately close (Ctrl+,)."""
     _ensure_focused(win)
     send_keys("^{,}")
-    time.sleep(1.0)
-    # Close the settings tab
+    _brief_sleep(500)
     send_keys("^+w")
-    time.sleep(0.3)
+    _brief_sleep(150)
 
 
 def open_command_palette(win):
     """Open command palette (Ctrl+Shift+P) and dismiss."""
     _ensure_focused(win)
     send_keys("^+p")
-    time.sleep(0.5)
+    _brief_sleep(300)
     send_keys("{ESC}")
-    time.sleep(0.2)
+    _brief_sleep(100)
 
 
 def command_palette_random(win):
@@ -418,14 +433,14 @@ def command_palette_random(win):
     """
     _ensure_focused(win)
     send_keys("^+p")
-    time.sleep(0.5)
+    _brief_sleep(300)
     steps = random.randint(1, 30)
     for _ in range(steps):
         send_keys("{DOWN}")
-        time.sleep(0.03)
+        time.sleep(0.02)
     send_keys("{ENTER}")
     logger.info(f"Command palette: selected item at position ~{steps}")
-    time.sleep(0.5)
+    _brief_sleep(200)
 
 
 def command_palette_search(win):
@@ -442,17 +457,16 @@ def command_palette_search(win):
     ]
     term = random.choice(terms)
     send_keys("^+p")
-    time.sleep(0.4)
-    send_keys(term, pause=0.03)
-    time.sleep(0.3)
-    # Arrow down a few positions into filtered results
+    _brief_sleep(200)
+    send_keys(term, pause=0.02)
+    _brief_sleep(150)
     steps = random.randint(0, 5)
     for _ in range(steps):
         send_keys("{DOWN}")
-        time.sleep(0.03)
+        time.sleep(0.02)
     send_keys("{ENTER}")
     logger.info(f"Command palette: searched '{term}', selected position ~{steps}")
-    time.sleep(0.5)
+    _brief_sleep(200)
 
 
 # Track the TerminalStress subprocess so we don't launch multiples
@@ -487,14 +501,14 @@ def run_terminal_stress(win):
     # Type the command into the focused terminal pane
     send_keys(cmd + "{ENTER}", pause=0.02)
     logger.info(f"Launched TerminalStress via: {cmd}")
-    time.sleep(1.0)
+    _brief_sleep(500)
 
 
 def stop_terminal_stress(win):
     """Send Ctrl+C to the focused pane to stop a running TerminalStress."""
     _ensure_focused(win)
     send_keys("^c")
-    time.sleep(0.5)
+    _brief_sleep(200)
 
 
 # Build the action catalog with weights.
@@ -541,7 +555,6 @@ def build_action_catalog() -> list[Action]:
         Action("resize_window", 6, resize_window),
         Action("maximize_window", 2, maximize_window),
         Action("minimize_restore_window", 1, minimize_restore_window),
-        Action("toggle_fullscreen", 1, toggle_fullscreen),
 
         # Zoom
         Action("zoom_in", 2, zoom_in),
