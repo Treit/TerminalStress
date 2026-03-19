@@ -18,17 +18,18 @@ from pathlib import Path
 import psutil
 from pywinauto.application import Application
 
-from .actions import build_action_catalog, pick_action
+from .actions import build_action_catalog, pick_action, FocusError
 from .watchdog import Watchdog, find_wt_process
 
 # Logging setup
 LOG_DIR = Path(__file__).parent.parent / "monkey_logs"
 
 
-def setup_logging(log_dir: Path) -> Path:
+def setup_logging(log_dir: Path, instance_id: int | None = None) -> Path:
     log_dir.mkdir(exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file = log_dir / f"monkey_{timestamp}.log"
+    suffix = f"_inst{instance_id}" if instance_id is not None else ""
+    log_file = log_dir / f"monkey_{timestamp}{suffix}.log"
 
     logging.basicConfig(
         level=logging.INFO,
@@ -179,6 +180,13 @@ def run_monkey(
             try:
                 logger.info(f"[{total_actions}] {action.name}")
                 action.func(win)
+            except FocusError:
+                logger.debug(f"[{total_actions}] {action.name} skipped (WT not focused)")
+                total_actions -= 1
+                action_counts[action.name] = action_counts.get(action.name, 0) - 1
+                _brief_sleep_ms = random.uniform(0.05, 0.2)
+                time.sleep(_brief_sleep_ms)
+                continue
             except Exception as e:
                 action_errors[action.name] = action_errors.get(action.name, 0) + 1
                 logger.warning(f"[{total_actions}] {action.name} FAILED: {e}")
@@ -298,7 +306,7 @@ def run_monkey(
                     pass
 
             # Random delay between actions
-            time.sleep(random.uniform(0.05, 0.3))
+            time.sleep(random.uniform(0.01, 0.15))
 
     except Exception as e:
         logger.error(f"Unexpected error in monkey loop: {e}", exc_info=True)
@@ -380,10 +388,47 @@ Examples:
         default=2048.0,
         help="Memory threshold in MB for leak warnings (default: 2048)",
     )
+    parser.add_argument(
+        "--instances",
+        type=int,
+        default=1,
+        help="Number of parallel monkey instances to run (default: 1)",
+    )
+
+    parser.add_argument(
+        "--instance-id",
+        type=int,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
 
     args = parser.parse_args()
 
-    log_file = setup_logging(LOG_DIR)
+    if args.instances > 1:
+        import subprocess as sp
+        procs = []
+        for i in range(args.instances):
+            instance_seed = (args.seed or random.randint(0, 2**32 - 1)) + i
+            cmd = [
+                sys.executable, "-m", "monkey.runner",
+                "--duration", str(args.duration),
+                "--seed", str(instance_seed),
+                "--health-interval", str(args.health_interval),
+                "--memory-threshold", str(args.memory_threshold),
+                "--instance-id", str(i),
+            ]
+            if args.launch:
+                cmd.append("--launch")
+            print(f"Starting monkey instance {i+1}/{args.instances} (seed={instance_seed})")
+            proc = sp.Popen(cmd, cwd=str(Path(__file__).parent.parent))
+            procs.append(proc)
+        for proc in procs:
+            proc.wait()
+        results = [p.returncode for p in procs]
+        print(f"All instances finished. Exit codes: {results}")
+        sys.exit(1 if any(r != 0 for r in results) else 0)
+
+    log_file = setup_logging(LOG_DIR, instance_id=args.instance_id)
     logger = logging.getLogger("monkey")
     logger.info(f"Log file: {log_file}")
 
