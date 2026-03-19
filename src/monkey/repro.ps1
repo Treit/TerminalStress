@@ -47,7 +47,7 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
 
 # Install dependencies
 Write-Host "Installing Python dependencies..." -ForegroundColor Yellow
-uv pip install -r (Join-Path $monkeyDir 'requirements.txt') --quiet
+uv pip install -r (Join-Path $monkeyDir 'requirements.txt') --system --quiet
 if ($LASTEXITCODE -ne 0) { throw "uv pip install failed" }
 
 # Clear old logs
