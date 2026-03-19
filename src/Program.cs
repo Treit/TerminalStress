@@ -52,7 +52,8 @@
                     var color = colors[r.Next(colors.Length)];
                     Console.ForegroundColor = color;
 
-                    char c = (char)r.Next(0, 0xFFFF);
+                    char c = (char)r.Next();
+
                     Console.Write(c);
                     s += c;
 
