@@ -5,6 +5,9 @@
 
 .vscode/
 
+# Monkey tester logs
+monkey_logs/
+
 # User-specific files
 *.rsuser
 *.suo

@@ -1,0 +1,13 @@
+{
+  "description": "Known Windows Terminal bugs to avoid during monkey testing. The runner reads this file and adjusts action behavior accordingly.",
+  "bugs": [
+    {
+      "id": "gh-19996",
+      "url": "https://github.com/microsoft/terminal/issues/19996",
+      "summary": "Terminal hangs when resizing pane to minimum width with Alt+Shift+Arrow",
+      "mitigation": "max_pane_resize_repeats",
+      "mitigation_value": 5,
+      "enabled": true
+    }
+  ]
+}
