@@ -59,7 +59,7 @@ if (Test-Path (Join-Path $venvDir 'Scripts' 'Activate.ps1')) {
     & (Join-Path $venvDir 'Scripts' 'Activate.ps1')
     uv pip install -r (Join-Path $monkeyDir 'requirements.txt') --quiet
 } else {
-    uv pip install -r (Join-Path $monkeyDir 'requirements.txt') --quiet
+    uv pip install -r (Join-Path $monkeyDir 'requirements.txt') --system --quiet
 }
 if ($LASTEXITCODE -ne 0) { throw "uv pip install failed" }
 
