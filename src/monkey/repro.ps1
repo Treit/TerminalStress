@@ -28,7 +28,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 if (-not $repoRoot) { $repoRoot = $PSScriptRoot }
 $monkeyDir = Join-Path $repoRoot 'src' 'monkey'
 $srcDir = Join-Path $repoRoot 'src'
