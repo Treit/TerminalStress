@@ -580,6 +580,7 @@ def build_action_catalog() -> list[Action]:
         Action("resize_window", 6, resize_window),
         Action("maximize_window", 2, maximize_window),
         Action("minimize_restore_window", 1, minimize_restore_window),
+        Action("toggle_fullscreen", 1, toggle_fullscreen),
 
         # Zoom
         Action("zoom_in", 2, zoom_in),
