@@ -37,6 +37,14 @@ Write-Host "=== Windows Terminal Crash Repro ===" -ForegroundColor Cyan
 Write-Host "Duration: ${Duration}s, Instances: $Instances, Seed: $Seed"
 Write-Host ""
 
+# Check for uv
+if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+    Write-Host "ERROR: 'uv' is not installed." -ForegroundColor Red
+    Write-Host "Install it by running:" -ForegroundColor Yellow
+    Write-Host "  powershell -ExecutionPolicy ByPass -c `"irm https://astral.sh/uv/install.ps1 | iex`"" -ForegroundColor White
+    throw "'uv' is not installed. Please install it and try again."
+}
+
 # Install dependencies
 Write-Host "Installing Python dependencies..." -ForegroundColor Yellow
 uv pip install -r (Join-Path $monkeyDir 'requirements.txt') --quiet
