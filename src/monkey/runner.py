@@ -68,13 +68,19 @@ def connect_to_wt() -> tuple[Application, any, int]:
     return app, win, pid
 
 
-def launch_wt() -> tuple[Application, any, int]:
+def launch_wt(profile: str | None = None) -> tuple[Application, any, int]:
     """
     Launch a new Windows Terminal instance and connect to it.
     Returns (app, window, pid).
+
+    Args:
+        profile: WT profile name to use (e.g. "Command Prompt"). None = default.
     """
     import subprocess
-    subprocess.Popen(["wt.exe"], creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+    cmd = ["wt.exe"]
+    if profile:
+        cmd += ["-p", profile]
+    subprocess.Popen(cmd, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
     # WT launcher stub exits quickly; the real process takes a moment to start
     for _ in range(10):
         time.sleep(1)
@@ -91,6 +97,7 @@ def run_monkey(
     health_check_interval: int = 10,
     auto_launch: bool = False,
     memory_threshold_mb: float = 2048.0,
+    wt_profile: str | None = None,
 ):
     """
     Main monkey test loop.
@@ -101,6 +108,7 @@ def run_monkey(
         health_check_interval: Seconds between health snapshots.
         auto_launch: Whether to launch WT if not running.
         memory_threshold_mb: Memory threshold for leak warnings.
+        wt_profile: WT profile to use when launching (e.g. "Command Prompt").
     """
     logger = logging.getLogger("monkey")
 
@@ -118,11 +126,15 @@ def run_monkey(
     except RuntimeError:
         if auto_launch:
             logger.info("Launching Windows Terminal...")
-            app, win, pid = launch_wt()
+            app, win, pid = launch_wt(profile=wt_profile)
         else:
             raise
 
     logger.info(f"Connected to Windows Terminal (PID {pid})")
+
+    # Track all PIDs and crashes for post-run analysis
+    all_pids = [pid]
+    crash_events = []
 
     # Initialize watchdog
     watchdog = Watchdog(pid, memory_threshold_mb=memory_threshold_mb)
@@ -205,7 +217,15 @@ def run_monkey(
                             f"Windows Terminal process CRASHED (exit code: {exit_code})!"
                         )
                         watchdog.state.crash_detected = True
-                        break
+                        crash_events.append({
+                            "time": time.time(),
+                            "pid": pid,
+                            "exit_code": exit_code,
+                            "last_action": action.name,
+                            "total_actions": total_actions,
+                        })
+                        if not auto_launch:
+                            break
                     # Try to reconnect or relaunch
                     logger.info("Attempting to reconnect to Windows Terminal...")
                     time.sleep(2)
@@ -214,15 +234,19 @@ def run_monkey(
                         watchdog = Watchdog(pid, memory_threshold_mb=memory_threshold_mb)
                         watchdog.set_hwnd(win.handle)
                         set_target_hwnd(win.handle)
+                        if pid not in all_pids:
+                            all_pids.append(pid)
                         logger.info(f"Reconnected to Windows Terminal (PID {pid})")
                     except RuntimeError:
                         if auto_launch:
                             logger.info("Launching new Windows Terminal instance...")
                             try:
-                                app, win, pid = launch_wt()
+                                app, win, pid = launch_wt(profile=wt_profile)
                                 watchdog = Watchdog(pid, memory_threshold_mb=memory_threshold_mb)
                                 watchdog.set_hwnd(win.handle)
                                 set_target_hwnd(win.handle)
+                                if pid not in all_pids:
+                                    all_pids.append(pid)
                                 logger.info(f"Launched and connected to Windows Terminal (PID {pid})")
                             except Exception:
                                 logger.error("Failed to launch Windows Terminal. Stopping.")
@@ -243,7 +267,15 @@ def run_monkey(
                         logger.warning("Windows Terminal exited normally (code 0) during health check.")
                     else:
                         logger.error(f"Windows Terminal process CRASHED (exit code: {exit_code})!")
-                        break
+                        crash_events.append({
+                            "time": time.time(),
+                            "pid": pid,
+                            "exit_code": exit_code,
+                            "last_action": "health_check",
+                            "total_actions": total_actions,
+                        })
+                        if not auto_launch:
+                            break
                     logger.info("Attempting to reconnect to Windows Terminal...")
                     time.sleep(2)
                     try:
@@ -251,16 +283,20 @@ def run_monkey(
                         watchdog = Watchdog(pid, memory_threshold_mb=memory_threshold_mb)
                         watchdog.set_hwnd(win.handle)
                         set_target_hwnd(win.handle)
+                        if pid not in all_pids:
+                            all_pids.append(pid)
                         logger.info(f"Reconnected to Windows Terminal (PID {pid})")
                         continue
                     except RuntimeError:
                         if auto_launch:
                             logger.info("Launching new Windows Terminal instance...")
                             try:
-                                app, win, pid = launch_wt()
+                                app, win, pid = launch_wt(profile=wt_profile)
                                 watchdog = Watchdog(pid, memory_threshold_mb=memory_threshold_mb)
                                 watchdog.set_hwnd(win.handle)
                                 set_target_hwnd(win.handle)
+                                if pid not in all_pids:
+                                    all_pids.append(pid)
                                 logger.info(f"Launched and connected to Windows Terminal (PID {pid})")
                                 continue
                             except Exception:
@@ -324,12 +360,17 @@ def run_monkey(
     summary["action_counts"] = action_counts
     summary["action_errors"] = action_errors
     summary["seed"] = seed
+    summary["all_pids"] = all_pids
+    summary["crash_events"] = crash_events
+    summary["total_crashes"] = len(crash_events)
 
     logger.info("=" * 72)
     logger.info("MONKEY TEST COMPLETE")
     logger.info(f"Duration: {duration:.1f}s ({duration / 60:.1f}m)")
     logger.info(f"Total actions: {total_actions}")
     logger.info(f"Crash detected: {summary['crash_detected']}")
+    logger.info(f"Total crashes (with recovery): {len(crash_events)}")
+    logger.info(f"All PIDs observed: {all_pids}")
     logger.info(f"Hang count: {summary['hang_count']}")
     logger.info(f"Memory: initial={summary['initial_rss_mb']}MB, peak={summary['peak_rss_mb']}MB, current={summary['current_rss_mb']}MB")
     logger.info(f"Seed: {seed} (use --seed {seed} to reproduce)")
@@ -395,6 +436,12 @@ Examples:
         help="Memory threshold in MB for leak warnings (default: 2048)",
     )
     parser.add_argument(
+        "--wt-profile",
+        type=str,
+        default=None,
+        help='WT profile to launch (e.g. "Command Prompt" to skip shell profile loading)',
+    )
+    parser.add_argument(
         "--instances",
         type=int,
         default=1,
@@ -425,6 +472,8 @@ Examples:
             ]
             if args.launch:
                 cmd.append("--launch")
+            if args.wt_profile:
+                cmd += ["--wt-profile", args.wt_profile]
             print(f"Starting monkey instance {i+1}/{args.instances} (seed={instance_seed})")
             proc = sp.Popen(cmd, cwd=str(Path(__file__).parent.parent))
             procs.append(proc)
@@ -444,6 +493,7 @@ Examples:
         health_check_interval=args.health_interval,
         auto_launch=args.launch,
         memory_threshold_mb=args.memory_threshold,
+        wt_profile=args.wt_profile,
     )
 
     # Exit with error code if crash or hang was detected
