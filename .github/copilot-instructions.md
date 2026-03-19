@@ -29,3 +29,4 @@ Passing any command-line argument switches the output encoding from UTF-8 to UTF
 - Target framework is .NET 7.0 (`net7.0`).
 - `#pragma warning disable SYSLIB0001` is used intentionally to allow UTF-7 encoding for stress testing purposes.
 - The solution file lives inside `src/` alongside the project and source files.
+- Use `uv` instead of `pip` for installing Python packages (e.g., `uv pip install` instead of `pip install`).

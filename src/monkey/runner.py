@@ -18,7 +18,7 @@ from pathlib import Path
 import psutil
 from pywinauto.application import Application
 
-from .actions import build_action_catalog, pick_action, FocusError
+from .actions import build_action_catalog, pick_action, FocusError, set_target_hwnd, FocusError
 from .watchdog import Watchdog, find_wt_process
 
 # Logging setup
@@ -127,6 +127,7 @@ def run_monkey(
     # Initialize watchdog
     watchdog = Watchdog(pid, memory_threshold_mb=memory_threshold_mb)
     watchdog.set_hwnd(win.handle)
+    set_target_hwnd(win.handle)
 
     # Take initial snapshot
     snap = watchdog.take_snapshot()
@@ -212,6 +213,7 @@ def run_monkey(
                         app, win, pid = connect_to_wt()
                         watchdog = Watchdog(pid, memory_threshold_mb=memory_threshold_mb)
                         watchdog.set_hwnd(win.handle)
+                        set_target_hwnd(win.handle)
                         logger.info(f"Reconnected to Windows Terminal (PID {pid})")
                     except RuntimeError:
                         if auto_launch:
@@ -220,6 +222,7 @@ def run_monkey(
                                 app, win, pid = launch_wt()
                                 watchdog = Watchdog(pid, memory_threshold_mb=memory_threshold_mb)
                                 watchdog.set_hwnd(win.handle)
+                                set_target_hwnd(win.handle)
                                 logger.info(f"Launched and connected to Windows Terminal (PID {pid})")
                             except Exception:
                                 logger.error("Failed to launch Windows Terminal. Stopping.")
@@ -247,6 +250,7 @@ def run_monkey(
                         app, win, pid = connect_to_wt()
                         watchdog = Watchdog(pid, memory_threshold_mb=memory_threshold_mb)
                         watchdog.set_hwnd(win.handle)
+                        set_target_hwnd(win.handle)
                         logger.info(f"Reconnected to Windows Terminal (PID {pid})")
                         continue
                     except RuntimeError:
@@ -256,6 +260,7 @@ def run_monkey(
                                 app, win, pid = launch_wt()
                                 watchdog = Watchdog(pid, memory_threshold_mb=memory_threshold_mb)
                                 watchdog.set_hwnd(win.handle)
+                                set_target_hwnd(win.handle)
                                 logger.info(f"Launched and connected to Windows Terminal (PID {pid})")
                                 continue
                             except Exception:
@@ -302,6 +307,7 @@ def run_monkey(
                 try:
                     win = app.top_window()
                     watchdog.set_hwnd(win.handle)
+                    set_target_hwnd(win.handle)
                 except Exception:
                     pass
 

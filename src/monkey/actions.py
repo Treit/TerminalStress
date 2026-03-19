@@ -17,12 +17,59 @@ from pathlib import Path
 from typing import Callable, NamedTuple
 
 import pywinauto
-from pywinauto.keyboard import send_keys
+from pywinauto.keyboard import send_keys as _raw_send_keys
 from pywinauto import mouse
 
 logger = logging.getLogger("monkey")
 
 user32 = ctypes.windll.user32
+
+# The WT window handle, set by the runner before actions execute
+_target_hwnd: int = 0
+
+
+def set_target_hwnd(hwnd: int):
+    """Set the target WT window handle for focus verification."""
+    global _target_hwnd
+    _target_hwnd = hwnd
+
+
+def _is_wt_focused() -> bool:
+    """Check if the WT window is currently the foreground window."""
+    return _target_hwnd != 0 and user32.GetForegroundWindow() == _target_hwnd
+
+
+def _safe_send_keys(keys: str, **kwargs):
+    """
+    Wrapper around send_keys that verifies WT is focused immediately before
+    sending. Raises FocusError if WT lost focus between action start and now.
+    """
+    if not _is_wt_focused():
+        raise FocusError("WT lost focus before send_keys")
+    _raw_send_keys(keys, **kwargs)
+
+
+def _safe_click(coords):
+    """Mouse click only if WT is focused."""
+    if not _is_wt_focused():
+        raise FocusError("WT lost focus before mouse click")
+    _safe_click(coords=coords)
+
+
+def _safe_mouse_press(coords):
+    if not _is_wt_focused():
+        raise FocusError("WT lost focus before mouse press")
+    _safe_mouse_press(coords=coords)
+
+
+def _safe_mouse_move(coords):
+    if not _is_wt_focused():
+        raise FocusError("WT lost focus before mouse move")
+    _safe_mouse_move(coords=coords)
+
+
+def _safe_mouse_release(coords):
+    _safe_mouse_release(coords=coords)
 
 # Timing constants
 MIN_ACTION_DELAY = 0.01
@@ -104,25 +151,25 @@ def _ensure_focused(win):
 def split_pane_right(win):
     """Split the current pane to the right (Alt+Shift+=)."""
     _ensure_focused(win)
-    send_keys("%+{=}")
+    _safe_send_keys("%+{=}")
     _brief_sleep(200)
 
 
 def split_pane_down(win):
     """Split the current pane downward (Alt+Shift+-)."""
     _ensure_focused(win)
-    send_keys("%+{-}")
+    _safe_send_keys("%+{-}")
     _brief_sleep(200)
 
 
 def close_pane(win):
     """Close the current pane (Ctrl+Shift+W), but open a new tab first to prevent closing WT."""
     _ensure_focused(win)
-    send_keys("^+t")
+    _safe_send_keys("^+t")
     _brief_sleep(200)
-    send_keys("^+{TAB}")
+    _safe_send_keys("^+{TAB}")
     _brief_sleep(100)
-    send_keys("^+w")
+    _safe_send_keys("^+w")
     _brief_sleep(150)
 
 
@@ -131,7 +178,7 @@ def resize_pane_left(win):
     _ensure_focused(win)
     repeats = _get_resize_repeats()
     for _ in range(repeats):
-        send_keys("%+{LEFT}")
+        _safe_send_keys("%+{LEFT}")
         time.sleep(random.uniform(0.02, 0.08))
 
 
@@ -140,7 +187,7 @@ def resize_pane_right(win):
     _ensure_focused(win)
     repeats = _get_resize_repeats()
     for _ in range(repeats):
-        send_keys("%+{RIGHT}")
+        _safe_send_keys("%+{RIGHT}")
         time.sleep(random.uniform(0.02, 0.08))
 
 
@@ -149,7 +196,7 @@ def resize_pane_up(win):
     _ensure_focused(win)
     repeats = _get_resize_repeats()
     for _ in range(repeats):
-        send_keys("%+{UP}")
+        _safe_send_keys("%+{UP}")
         time.sleep(random.uniform(0.02, 0.08))
 
 
@@ -158,67 +205,67 @@ def resize_pane_down(win):
     _ensure_focused(win)
     repeats = _get_resize_repeats()
     for _ in range(repeats):
-        send_keys("%+{DOWN}")
+        _safe_send_keys("%+{DOWN}")
         time.sleep(random.uniform(0.02, 0.08))
 
 
 def focus_pane_left(win):
     """Move focus to the left pane (Alt+Left)."""
     _ensure_focused(win)
-    send_keys("%{LEFT}")
+    _safe_send_keys("%{LEFT}")
     _brief_sleep(50)
 
 
 def focus_pane_right(win):
     """Move focus to the right pane (Alt+Right)."""
     _ensure_focused(win)
-    send_keys("%{RIGHT}")
+    _safe_send_keys("%{RIGHT}")
     _brief_sleep(50)
 
 
 def focus_pane_up(win):
     """Move focus to the pane above (Alt+Up)."""
     _ensure_focused(win)
-    send_keys("%{UP}")
+    _safe_send_keys("%{UP}")
     _brief_sleep(50)
 
 
 def focus_pane_down(win):
     """Move focus to the pane below (Alt+Down)."""
     _ensure_focused(win)
-    send_keys("%{DOWN}")
+    _safe_send_keys("%{DOWN}")
     _brief_sleep(50)
 
 
 def new_tab(win):
     """Open a new tab (Ctrl+Shift+T)."""
     _ensure_focused(win)
-    send_keys("^+t")
+    _safe_send_keys("^+t")
     _brief_sleep(300)
 
 
 def close_tab(win):
     """Close the current tab, but open a new one first to prevent closing WT."""
     _ensure_focused(win)
-    send_keys("^+t")
+    _safe_send_keys("^+t")
     _brief_sleep(200)
-    send_keys("^+{TAB}")
+    _safe_send_keys("^+{TAB}")
     _brief_sleep(100)
-    send_keys("^+w")
+    _safe_send_keys("^+w")
     _brief_sleep(150)
 
 
 def next_tab(win):
     """Switch to the next tab (Ctrl+Tab)."""
     _ensure_focused(win)
-    send_keys("^{TAB}")
+    _safe_send_keys("^{TAB}")
     _brief_sleep(80)
 
 
 def prev_tab(win):
     """Switch to the previous tab (Ctrl+Shift+Tab)."""
     _ensure_focused(win)
-    send_keys("^+{TAB}")
+    _safe_send_keys("^+{TAB}")
     _brief_sleep(80)
 
 
@@ -231,7 +278,7 @@ def type_random_text(win):
     # Escape special pywinauto characters
     safe = text.replace("{", "{{").replace("}", "}}").replace("+", "{+}").replace("^", "{^}").replace("%", "{%}")
     try:
-        send_keys(safe, pause=0.01)
+        _safe_send_keys(safe, pause=0.01)
     except Exception:
         pass
     _brief_sleep(50)
@@ -240,7 +287,7 @@ def type_random_text(win):
 def type_enter(win):
     """Press Enter."""
     _ensure_focused(win)
-    send_keys("{ENTER}")
+    _safe_send_keys("{ENTER}")
     _brief_sleep(50)
 
 
@@ -262,7 +309,7 @@ def type_command(win):
         "title MonkeyTest",
     ]
     cmd = random.choice(commands)
-    send_keys(cmd + "{ENTER}", pause=0.02)
+    _safe_send_keys(cmd + "{ENTER}", pause=0.02)
     _brief_sleep(100)
 
 
@@ -271,7 +318,7 @@ def scroll_up(win):
     _ensure_focused(win)
     repeats = random.randint(1, 20)
     for _ in range(repeats):
-        send_keys("^+{UP}")
+        _safe_send_keys("^+{UP}")
         time.sleep(0.02)
 
 
@@ -280,7 +327,7 @@ def scroll_down(win):
     _ensure_focused(win)
     repeats = random.randint(1, 20)
     for _ in range(repeats):
-        send_keys("^+{DOWN}")
+        _safe_send_keys("^+{DOWN}")
         time.sleep(0.02)
 
 
@@ -326,7 +373,7 @@ def minimize_restore_window(win):
 def toggle_fullscreen(win):
     """Toggle fullscreen (F11)."""
     _ensure_focused(win)
-    send_keys("{F11}")
+    _safe_send_keys("{F11}")
     _brief_sleep(300)
 
 
@@ -335,7 +382,7 @@ def zoom_in(win):
     _ensure_focused(win)
     repeats = random.randint(1, 5)
     for _ in range(repeats):
-        send_keys("^{=}")
+        _safe_send_keys("^{=}")
         time.sleep(0.05)
 
 
@@ -344,26 +391,26 @@ def zoom_out(win):
     _ensure_focused(win)
     repeats = random.randint(1, 5)
     for _ in range(repeats):
-        send_keys("^{-}")
+        _safe_send_keys("^{-}")
         time.sleep(0.05)
 
 
 def zoom_reset(win):
     """Reset font size (Ctrl+0)."""
     _ensure_focused(win)
-    send_keys("^0")
+    _safe_send_keys("^0")
     _brief_sleep(50)
 
 
 def open_search(win):
     """Open the search dialog (Ctrl+Shift+F)."""
     _ensure_focused(win)
-    send_keys("^+f")
+    _safe_send_keys("^+f")
     _brief_sleep(200)
     text = "".join(random.choices(string.ascii_letters, k=random.randint(1, 20)))
-    send_keys(text, pause=0.02)
+    _safe_send_keys(text, pause=0.02)
     _brief_sleep(100)
-    send_keys("{ESC}")
+    _safe_send_keys("{ESC}")
     _brief_sleep(50)
 
 
@@ -374,7 +421,7 @@ def mouse_click_random(win):
         rect = win.rectangle()
         x = random.randint(rect.left + 10, max(rect.left + 11, rect.right - 10))
         y = random.randint(rect.top + 10, max(rect.top + 11, rect.bottom - 10))
-        mouse.click(coords=(x, y))
+        _safe_click(coords=(x, y))
     except Exception as e:
         logger.warning(f"mouse_click_random failed: {e}")
     _brief_sleep(50)
@@ -389,11 +436,11 @@ def mouse_drag_random(win):
         y1 = random.randint(rect.top + 30, max(rect.top + 31, rect.bottom - 10))
         x2 = random.randint(rect.left + 10, max(rect.left + 11, rect.right - 10))
         y2 = random.randint(rect.top + 30, max(rect.top + 31, rect.bottom - 10))
-        mouse.press(coords=(x1, y1))
+        _safe_mouse_press(coords=(x1, y1))
         time.sleep(0.02)
-        mouse.move(coords=(x2, y2))
+        _safe_mouse_move(coords=(x2, y2))
         time.sleep(0.02)
-        mouse.release(coords=(x2, y2))
+        _safe_mouse_release(coords=(x2, y2))
     except Exception as e:
         logger.warning(f"mouse_drag_random failed: {e}")
     _brief_sleep(50)
@@ -402,71 +449,49 @@ def mouse_drag_random(win):
 def copy_paste(win):
     """Copy selection then paste (Ctrl+Shift+C, Ctrl+Shift+V)."""
     _ensure_focused(win)
-    send_keys("^+c")
+    _safe_send_keys("^+c")
     _brief_sleep(50)
-    send_keys("^+v")
+    _safe_send_keys("^+v")
     _brief_sleep(50)
 
 
 def open_settings(win):
     """Open settings and immediately close (Ctrl+,)."""
     _ensure_focused(win)
-    send_keys("^{,}")
+    _safe_send_keys("^{,}")
     _brief_sleep(500)
-    send_keys("^+w")
+    _safe_send_keys("^+w")
     _brief_sleep(150)
 
 
 def open_command_palette(win):
     """Open command palette (Ctrl+Shift+P) and dismiss."""
     _ensure_focused(win)
-    send_keys("^+p")
+    _safe_send_keys("^+p")
     _brief_sleep(300)
-    send_keys("{ESC}")
+    _safe_send_keys("{ESC}")
     _brief_sleep(100)
-
-
-def command_palette_random(win):
-    """
-    Open command palette and pick a random item by arrowing down
-    a random number of times and pressing Enter.
-    """
-    _ensure_focused(win)
-    send_keys("^+p")
-    _brief_sleep(300)
-    steps = random.randint(1, 30)
-    for _ in range(steps):
-        send_keys("{DOWN}")
-        time.sleep(0.02)
-    send_keys("{ENTER}")
-    logger.info(f"Command palette: selected item at position ~{steps}")
-    _brief_sleep(200)
 
 
 def command_palette_search(win):
     """
     Open command palette, type a partial search term to filter commands,
-    then select one of the filtered results.
+    then dismiss. Does NOT press Enter to avoid executing dangerous commands.
     """
     _ensure_focused(win)
     terms = [
-        "split", "close", "tab", "pane", "font", "size", "color",
-        "theme", "scroll", "mark", "copy", "paste", "find", "reset",
-        "zoom", "move", "focus", "toggle", "full", "new", "rename",
-        "duplicate", "switch", "select", "clear", "export",
+        "split", "pane", "font", "size", "color",
+        "theme", "scroll", "copy", "paste", "find",
+        "zoom", "focus", "new", "rename",
     ]
     term = random.choice(terms)
-    send_keys("^+p")
+    _safe_send_keys("^+p")
     _brief_sleep(200)
-    send_keys(term, pause=0.02)
+    _safe_send_keys(term, pause=0.02)
     _brief_sleep(150)
-    steps = random.randint(0, 5)
-    for _ in range(steps):
-        send_keys("{DOWN}")
-        time.sleep(0.02)
-    send_keys("{ENTER}")
-    logger.info(f"Command palette: searched '{term}', selected position ~{steps}")
-    _brief_sleep(200)
+    _safe_send_keys("{ESC}")
+    logger.info(f"Command palette: searched '{term}', dismissed")
+    _brief_sleep(100)
 
 
 # Track the TerminalStress subprocess so we don't launch multiples
@@ -499,7 +524,7 @@ def run_terminal_stress(win):
         cmd = f"dotnet run --project {str(_STRESS_CSPROJ)}"
 
     # Type the command into the focused terminal pane
-    send_keys(cmd + "{ENTER}", pause=0.02)
+    _safe_send_keys(cmd + "{ENTER}", pause=0.02)
     logger.info(f"Launched TerminalStress via: {cmd}")
     _brief_sleep(500)
 
@@ -507,7 +532,7 @@ def run_terminal_stress(win):
 def stop_terminal_stress(win):
     """Send Ctrl+C to the focused pane to stop a running TerminalStress."""
     _ensure_focused(win)
-    send_keys("^c")
+    _safe_send_keys("^c")
     _brief_sleep(200)
 
 
@@ -564,7 +589,6 @@ def build_action_catalog() -> list[Action]:
         # Search & UI
         Action("open_search", 2, open_search),
         Action("open_command_palette", 1, open_command_palette),
-        Action("command_palette_random", 3, command_palette_random),
         Action("command_palette_search", 3, command_palette_search),
         Action("open_settings", 1, open_settings),
 

@@ -39,8 +39,8 @@ Write-Host ""
 
 # Install dependencies
 Write-Host "Installing Python dependencies..." -ForegroundColor Yellow
-pip install -r (Join-Path $monkeyDir 'requirements.txt') --quiet
-if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
+uv pip install -r (Join-Path $monkeyDir 'requirements.txt') --quiet
+if ($LASTEXITCODE -ne 0) { throw "uv pip install failed" }
 
 # Clear old logs
 $logDir = Join-Path $srcDir 'monkey_logs'
