@@ -144,7 +144,7 @@ def run_monkey(
     # Initialize watchdog
     watchdog = Watchdog(pid, memory_threshold_mb=memory_threshold_mb)
     watchdog.set_hwnd(win.handle)
-    set_target_hwnd(win.handle)
+    set_target_hwnd(win.handle, pid)
 
     # Take initial snapshot
     snap = watchdog.take_snapshot()
@@ -221,8 +221,11 @@ def run_monkey(
                 for tag in action.tags:
                     recent_tags.append(tag)
                     tag_counts[tag] = tag_counts.get(tag, 0) + 1
-            except FocusError:
-                logger.debug(f"[{total_actions}] {action.name} skipped (WT not focused)")
+            except FocusError as e:
+                if "External foreground window" in str(e):
+                    logger.info(f"[{total_actions}] {action.name} paused: {e}")
+                else:
+                    logger.debug(f"[{total_actions}] {action.name} skipped ({e})")
                 total_actions -= 1
                 remaining = action_counts.get(action.name, 0) - 1
                 if remaining > 0:
@@ -268,7 +271,7 @@ def run_monkey(
                         app, win, pid = connect_to_wt()
                         watchdog = Watchdog(pid, memory_threshold_mb=memory_threshold_mb)
                         watchdog.set_hwnd(win.handle)
-                        set_target_hwnd(win.handle)
+                        set_target_hwnd(win.handle, pid)
                         if pid not in all_pids:
                             all_pids.append(pid)
                         logger.info(f"Reconnected to Windows Terminal (PID {pid})")
@@ -279,7 +282,7 @@ def run_monkey(
                                 app, win, pid = launch_wt(profile=wt_profile)
                                 watchdog = Watchdog(pid, memory_threshold_mb=memory_threshold_mb)
                                 watchdog.set_hwnd(win.handle)
-                                set_target_hwnd(win.handle)
+                                set_target_hwnd(win.handle, pid)
                                 if pid not in all_pids:
                                     all_pids.append(pid)
                                 logger.info(f"Launched and connected to Windows Terminal (PID {pid})")
@@ -320,7 +323,7 @@ def run_monkey(
                         app, win, pid = connect_to_wt()
                         watchdog = Watchdog(pid, memory_threshold_mb=memory_threshold_mb)
                         watchdog.set_hwnd(win.handle)
-                        set_target_hwnd(win.handle)
+                        set_target_hwnd(win.handle, pid)
                         if pid not in all_pids:
                             all_pids.append(pid)
                         logger.info(f"Reconnected to Windows Terminal (PID {pid})")
@@ -332,7 +335,7 @@ def run_monkey(
                                 app, win, pid = launch_wt(profile=wt_profile)
                                 watchdog = Watchdog(pid, memory_threshold_mb=memory_threshold_mb)
                                 watchdog.set_hwnd(win.handle)
-                                set_target_hwnd(win.handle)
+                                set_target_hwnd(win.handle, pid)
                                 if pid not in all_pids:
                                     all_pids.append(pid)
                                 logger.info(f"Launched and connected to Windows Terminal (PID {pid})")
@@ -393,7 +396,7 @@ def run_monkey(
                             app, win, pid = connect_to_wt()
                             watchdog = Watchdog(pid, memory_threshold_mb=memory_threshold_mb)
                             watchdog.set_hwnd(win.handle)
-                            set_target_hwnd(win.handle)
+                            set_target_hwnd(win.handle, pid)
                             if pid not in all_pids:
                                 all_pids.append(pid)
                             logger.info(f"Reconnected to Windows Terminal (PID {pid})")
@@ -404,7 +407,7 @@ def run_monkey(
                                     app, win, pid = launch_wt(profile=wt_profile)
                                     watchdog = Watchdog(pid, memory_threshold_mb=memory_threshold_mb)
                                     watchdog.set_hwnd(win.handle)
-                                    set_target_hwnd(win.handle)
+                                    set_target_hwnd(win.handle, pid)
                                     if pid not in all_pids:
                                         all_pids.append(pid)
                                     logger.info(f"Launched and connected to Windows Terminal (PID {pid})")
@@ -432,7 +435,7 @@ def run_monkey(
                 try:
                     win = app.top_window()
                     watchdog.set_hwnd(win.handle)
-                    set_target_hwnd(win.handle)
+                    set_target_hwnd(win.handle, pid)
                 except Exception:
                     pass
 
