@@ -21,7 +21,7 @@ from pathlib import Path
 import psutil
 from pywinauto.application import Application
 
-from .actions import ACTION_PROFILES, FocusError, build_action_catalog, pick_action, set_target_hwnd, _flush_modifiers
+from .actions import ACTION_PROFILES, FocusError, MIN_ACTION_DELAY, MAX_ACTION_DELAY, build_action_catalog, pick_action, set_target_hwnd, _flush_modifiers
 from .input_guard import InputGuard
 from .input_lock import get_input_lock
 from .watchdog import Watchdog, find_wt_process
@@ -278,11 +278,11 @@ def run_monkey(
                         action_counts.pop(action.name, None)
                     # Flush modifier keys to clear any stuck state
                     _flush_modifiers()
-                    # Exponential backoff to reduce focus storms across instances
+                    # Brief backoff with jitter to avoid focus storms
                     focus_retry_count = getattr(run_monkey, '_focus_retry_count', 0)
-                    backoff = min(0.05 * (2 ** focus_retry_count), 2.0)
+                    backoff = min(0.02 * (2 ** focus_retry_count), 0.2)
                     run_monkey._focus_retry_count = focus_retry_count + 1
-                    time.sleep(backoff + random.uniform(0, 0.1))
+                    time.sleep(backoff + random.uniform(0, 0.02))
                     continue
                 except Exception as e:
                     action_errors[action.name] = action_errors.get(action.name, 0) + 1
@@ -489,7 +489,7 @@ def run_monkey(
                         pass
 
                 # Random delay between actions
-                time.sleep(random.uniform(0.01, 0.15))
+                time.sleep(random.uniform(MIN_ACTION_DELAY, MAX_ACTION_DELAY))
 
         except Exception as e:
             logger.error(f"Unexpected error in monkey loop: {e}", exc_info=True)

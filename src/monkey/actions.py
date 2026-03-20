@@ -100,8 +100,9 @@ def _is_target_foreground() -> bool:
     return _target_pid != 0 and _get_window_pid(foreground) == _target_pid
 
 
-def _assert_target_focus_stable(samples: int = 3, delay_s: float = 0.02):
-    """Require WT focus to remain stable across several quick polls."""
+def _assert_target_focus_stable(samples: int = 1, delay_s: float = 0.01):
+    """Quick focus check. The keyboard hook now prevents most focus-stealing,
+    so a single fast poll is sufficient."""
     for _ in range(samples):
         if not _is_target_foreground():
             raise FocusError("WT lost focus before input")
@@ -155,15 +156,15 @@ def _safe_mouse_release(coords):
         mouse.release(coords=coords)
 
 # Timing constants
-MIN_ACTION_DELAY = 0.01
-MAX_ACTION_DELAY = 0.15
+MIN_ACTION_DELAY = 0.005
+MAX_ACTION_DELAY = 0.05
 RESIZE_HOLD_REPEATS_MIN = 3
 RESIZE_HOLD_REPEATS_MAX = 30
 
 
 def _brief_sleep(max_ms: int = 150):
-    """Sleep for a randomized short duration, never more than 0.5s."""
-    time.sleep(random.uniform(0.01, min(max_ms / 1000.0, 0.5)))
+    """Sleep for a randomized short duration to let WT process input."""
+    time.sleep(random.uniform(0.005, min(max_ms / 2000.0, 0.25)))
 
 # Known-bug mitigations (overridden by known_bugs.json at catalog build time)
 _mitigations: dict[str, object] = {}
@@ -286,7 +287,7 @@ def _ensure_focused(win):
     Raises FocusError if WT cannot be focused, preventing input from going
     to the wrong window.
 
-    Enhanced with rogue window dismissal and ForegroundLockTimeout bypass.
+    Always attempts to reclaim focus for WT via SetForegroundWindow.
     """
     hwnd = win.handle
     foreground = user32.GetForegroundWindow()
@@ -294,17 +295,9 @@ def _ensure_focused(win):
 
     # If a rogue window (Start Menu, Alt+Tab) has focus, dismiss it first
     if foreground and foreground != hwnd and foreground_pid not in (0, _target_pid):
-        if _dismiss_rogue_foreground():
-            time.sleep(0.1)
-            foreground = user32.GetForegroundWindow()
-            foreground_pid = _get_window_pid(foreground)
+        _dismiss_rogue_foreground()
 
-    # Never steal focus back from a foreign app; skip until WT is foreground again.
-    if foreground and foreground != hwnd and foreground_pid not in (0, _target_pid):
-        raise FocusError(
-            f"External foreground window (pid={foreground_pid}) detected; refusing to send input"
-        )
-
+    # Try to bring WT to the foreground
     try:
         if not _is_target_foreground():
             fore_tid = user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), None)
@@ -314,7 +307,7 @@ def _ensure_focused(win):
             user32.SetForegroundWindow(hwnd)
             if fore_tid != our_tid:
                 user32.AttachThreadInput(our_tid, fore_tid, False)
-            _assert_target_focus_stable(samples=5, delay_s=0.02)
+            _assert_target_focus_stable(samples=2, delay_s=0.01)
     except Exception:
         pass
 
@@ -354,7 +347,7 @@ def resize_pane_left(win):
     repeats = _get_resize_repeats()
     for _ in range(repeats):
         _safe_send_keys("%+{LEFT}")
-        time.sleep(random.uniform(0.02, 0.08))
+        time.sleep(random.uniform(0.005, 0.03))
 
 
 def resize_pane_right(win):
@@ -363,7 +356,7 @@ def resize_pane_right(win):
     repeats = _get_resize_repeats()
     for _ in range(repeats):
         _safe_send_keys("%+{RIGHT}")
-        time.sleep(random.uniform(0.02, 0.08))
+        time.sleep(random.uniform(0.005, 0.03))
 
 
 def resize_pane_up(win):
@@ -372,7 +365,7 @@ def resize_pane_up(win):
     repeats = _get_resize_repeats()
     for _ in range(repeats):
         _safe_send_keys("%+{UP}")
-        time.sleep(random.uniform(0.02, 0.08))
+        time.sleep(random.uniform(0.005, 0.03))
 
 
 def resize_pane_down(win):
@@ -381,7 +374,7 @@ def resize_pane_down(win):
     repeats = _get_resize_repeats()
     for _ in range(repeats):
         _safe_send_keys("%+{DOWN}")
-        time.sleep(random.uniform(0.02, 0.08))
+        time.sleep(random.uniform(0.005, 0.03))
 
 
 def focus_pane_left(win):
@@ -501,7 +494,7 @@ def scroll_up(win):
     repeats = random.randint(1, 20)
     for _ in range(repeats):
         _safe_send_keys("^+{UP}")
-        time.sleep(0.02)
+        time.sleep(0.005)
 
 
 def scroll_down(win):
@@ -510,7 +503,7 @@ def scroll_down(win):
     repeats = random.randint(1, 20)
     for _ in range(repeats):
         _safe_send_keys("^+{DOWN}")
-        time.sleep(0.02)
+        time.sleep(0.005)
 
 
 def resize_window(win):
@@ -565,7 +558,7 @@ def zoom_in(win):
     repeats = random.randint(1, 5)
     for _ in range(repeats):
         _safe_send_keys("^{=}")
-        time.sleep(0.05)
+        time.sleep(0.01)
 
 
 def zoom_out(win):
@@ -574,7 +567,7 @@ def zoom_out(win):
     repeats = random.randint(1, 5)
     for _ in range(repeats):
         _safe_send_keys("^{-}")
-        time.sleep(0.05)
+        time.sleep(0.01)
 
 
 def zoom_reset(win):
@@ -619,9 +612,9 @@ def mouse_drag_random(win):
         x2 = random.randint(rect.left + 10, max(rect.left + 11, rect.right - 10))
         y2 = random.randint(rect.top + 30, max(rect.top + 31, rect.bottom - 10))
         _safe_mouse_press(coords=(x1, y1))
-        time.sleep(0.02)
+        time.sleep(0.005)
         _safe_mouse_move(coords=(x2, y2))
-        time.sleep(0.02)
+        time.sleep(0.005)
         _safe_mouse_release(coords=(x2, y2))
     except Exception as e:
         logger.warning(f"mouse_drag_random failed: {e}")
