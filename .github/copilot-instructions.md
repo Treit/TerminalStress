@@ -53,3 +53,20 @@ GROUPME_BOT_ID=your_bot_id_here
 ```
 
 **When to post:** Post when you find a new unique crash signature, a new hang bucket, or a reproduction of a known bug with new details. Keep messages concise — include the crash function, exception type, and what triggered it.
+
+## Teams Messaging
+
+To send messages to a Teams chat (e.g., sharing stress test results):
+
+1. **Find the chat** — Use `SearchTeamsMessages` with a natural language query like `"find my one on one chat with <person>"`. Do NOT use `ListChats` — it frequently times out.
+2. **Extract the chat ID** — The search results include `chatIds` in the response JSON. The 1:1 chat ID looks like `19:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx@unq.gbl.spaces`.
+3. **Send the message** — Use `PostMessage` with the `chatId` and your message content.
+
+```
+# Example flow:
+# Step 1: SearchTeamsMessages("find my one on one chat with Randy Treit")
+# Step 2: Extract chatId from response (look in chatIds array or URL patterns)
+# Step 3: PostMessage(chatId=..., content="your message", contentType="text")
+```
+
+**Important:** Avoid `ListChats` and `ListChatMessages` — these paginate through all chats/messages and routinely time out. Use `SearchTeamsMessages` to find chats and extract IDs instead.
