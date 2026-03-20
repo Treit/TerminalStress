@@ -160,6 +160,9 @@ def _safe_send_keys(keys: str, **kwargs):
     sending. Raises FocusError if WT lost focus between action start and now.
     """
     _assert_target_focus_stable()
+    # pywinauto's parse_keys silently strips literal spaces —
+    # replace them with {SPACE} so they actually get typed.
+    keys = keys.replace(" ", "{SPACE}")
     _raw_send_keys(keys, **kwargs)
 
 
