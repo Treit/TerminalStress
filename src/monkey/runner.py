@@ -223,10 +223,7 @@ def run_monkey(
                     recent_tags.append(tag)
                     tag_counts[tag] = tag_counts.get(tag, 0) + 1
             except FocusError as e:
-                if "External foreground window" in str(e):
-                    logger.info(f"[{total_actions}] {action.name} paused: {e}")
-                else:
-                    logger.debug(f"[{total_actions}] {action.name} skipped ({e})")
+                logger.debug(f"[{total_actions}] {action.name} skipped ({e})")
                 total_actions -= 1
                 remaining = action_counts.get(action.name, 0) - 1
                 if remaining > 0:

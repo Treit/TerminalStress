@@ -25,6 +25,15 @@ from pywinauto import mouse
 logger = logging.getLogger("monkey")
 
 user32 = ctypes.windll.user32
+SW_RESTORE = 9
+SWP_NOSIZE = 0x0001
+SWP_NOMOVE = 0x0002
+SWP_SHOWWINDOW = 0x0040
+HWND_TOPMOST = -1
+HWND_NOTOPMOST = -2
+KEYEVENTF_KEYUP = 0x0002
+VK_MENU = 0x12
+ASFW_ANY = -1
 
 # The WT window handle, set by the runner before actions execute
 _target_hwnd: int = 0
@@ -67,6 +76,82 @@ def _assert_target_focus_stable(samples: int = 3, delay_s: float = 0.02):
         if not _is_target_foreground():
             raise FocusError("WT lost focus before input")
         time.sleep(delay_s)
+
+
+def _reclaim_focus(win) -> bool:
+    """Aggressively restore focus to WT before sending input."""
+    hwnd = win.handle
+    target_tid = user32.GetWindowThreadProcessId(hwnd, None)
+
+    try:
+        user32.ShowWindow(hwnd, SW_RESTORE)
+    except Exception:
+        pass
+
+    for _ in range(3):
+        foreground = user32.GetForegroundWindow()
+        fore_tid = user32.GetWindowThreadProcessId(foreground, None)
+        our_tid = ctypes.windll.kernel32.GetCurrentThreadId()
+
+        try:
+            try:
+                user32.AllowSetForegroundWindow(ASFW_ANY)
+            except Exception:
+                pass
+            try:
+                user32.keybd_event(VK_MENU, 0, 0, 0)
+                user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
+            except Exception:
+                pass
+
+            if fore_tid and fore_tid != our_tid:
+                user32.AttachThreadInput(our_tid, fore_tid, True)
+            if fore_tid and target_tid and fore_tid != target_tid:
+                user32.AttachThreadInput(target_tid, fore_tid, True)
+            user32.BringWindowToTop(hwnd)
+            user32.SetForegroundWindow(hwnd)
+            user32.SetActiveWindow(hwnd)
+            user32.SetFocus(hwnd)
+        finally:
+            if fore_tid and fore_tid != our_tid:
+                user32.AttachThreadInput(our_tid, fore_tid, False)
+            if fore_tid and target_tid and fore_tid != target_tid:
+                user32.AttachThreadInput(target_tid, fore_tid, False)
+
+        time.sleep(0.05)
+        if _is_target_foreground():
+            return True
+
+        try:
+            win.set_focus()
+        except Exception:
+            pass
+        time.sleep(0.05)
+        if _is_target_foreground():
+            return True
+
+        try:
+            user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW)
+            user32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW)
+            user32.SetForegroundWindow(hwnd)
+        except Exception:
+            pass
+        time.sleep(0.05)
+        if _is_target_foreground():
+            return True
+
+        try:
+            rect = win.rectangle()
+            focus_x = max(rect.left + 40, rect.left + 5)
+            focus_y = max(rect.top + 80, rect.top + 5)
+            win.click_input(coords=(focus_x - rect.left, focus_y - rect.top))
+        except Exception:
+            pass
+        time.sleep(0.05)
+        if _is_target_foreground():
+            return True
+
+    return False
 
 
 def _safe_send_keys(keys: str, **kwargs):
@@ -204,32 +289,14 @@ def _ensure_focused(win):
     Raises FocusError if WT cannot be focused, preventing input from going
     to the wrong window.
     """
-    hwnd = win.handle
-    foreground = user32.GetForegroundWindow()
-    foreground_pid = _get_window_pid(foreground)
+    if _is_target_foreground():
+        _assert_target_focus_stable(samples=5, delay_s=0.02)
+        return
 
-    # Never steal focus back from a foreign app; skip until WT is foreground again.
-    if foreground and foreground != hwnd and foreground_pid not in (0, _target_pid):
-        raise FocusError(
-            f"External foreground window (pid={foreground_pid}) detected; refusing to send input"
-        )
+    if not _reclaim_focus(win):
+        raise FocusError("Failed to restore focus to WT")
 
-    try:
-        if not _is_target_foreground():
-            fore_tid = user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), None)
-            our_tid = ctypes.windll.kernel32.GetCurrentThreadId()
-            if fore_tid != our_tid:
-                user32.AttachThreadInput(our_tid, fore_tid, True)
-            user32.SetForegroundWindow(hwnd)
-            if fore_tid != our_tid:
-                user32.AttachThreadInput(our_tid, fore_tid, False)
-            _assert_target_focus_stable(samples=5, delay_s=0.02)
-    except Exception:
-        pass
-
-    # Verify focus was actually acquired
-    if not _is_target_foreground():
-        raise FocusError("WT is not the foreground window, skipping action")
+    _assert_target_focus_stable(samples=5, delay_s=0.02)
 
 
 def split_pane_right(win):
