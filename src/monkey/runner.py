@@ -53,9 +53,14 @@ def _disable_foreground_lock_timeout() -> int:
 
 
 def _restore_foreground_lock_timeout(timeout: int) -> None:
-    """Restore the ForegroundLockTimeout to its previous value."""
+    """Restore the ForegroundLockTimeout to its previous value.
+
+    SPI_SETFOREGROUNDLOCKTIMEOUT expects pvParam to be the timeout value
+    reinterpreted as a pointer (PVOID), not a pointer to the value.
+    """
     _user32.SystemParametersInfoW(
-        SPI_SETFOREGROUNDLOCKTIMEOUT, 0, timeout, 0
+        SPI_SETFOREGROUNDLOCKTIMEOUT, 0,
+        ctypes.cast(timeout, ctypes.c_void_p), 0
     )
 
 def setup_logging(log_dir: Path, instance_id: int | None = None) -> Path:

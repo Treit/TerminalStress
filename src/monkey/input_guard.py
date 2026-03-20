@@ -267,7 +267,13 @@ class InputGuard:
 
         Returns 1 to suppress an event, or delegates to ``CallNextHookEx``
         to let it through.
+
+        NOTE: No logging in this callback — file I/O could exceed Windows'
+        ~300ms hook timeout, causing missed keystrokes.
         """
+        if not self._hook:
+            return 0
+
         if nCode == HC_ACTION:
             kbd = ctypes.cast(lParam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
             vk = kbd.vkCode
@@ -277,22 +283,15 @@ class InputGuard:
 
             # ------ WIN key: suppress entirely ----------------------------
             if vk in _WIN_VKS:
-                log.debug("Suppressed WIN key (vk=0x%02X, down=%s)", vk, is_key_down)
                 return 1
 
             # ------ ALT tracking for bare-ALT suppression -----------------
             if vk in _ALT_VKS:
                 if is_key_down:
-                    # ALT pressed – reset the combo tracker.
                     self._alt_combo_key_pressed = False
                 elif is_key_up:
                     if not self._alt_combo_key_pressed:
-                        # Bare ALT release with no intermediate key →
-                        # suppress to prevent Start Menu activation.
-                        log.debug("Suppressed bare ALT release (vk=0x%02X)", vk)
                         return 1
-                    # ALT released after a combo key was pressed – allow it
-                    # so that intentional ALT shortcuts complete normally.
 
             # ------ Track non-modifier keys while ALT is held -------------
             if is_key_down and vk not in _MODIFIER_VKS and vk not in _WIN_VKS:
@@ -300,12 +299,10 @@ class InputGuard:
 
             # ------ ALT+TAB: suppress TAB ---------------------------------
             if vk == VK_TAB and wParam == WM_SYSKEYDOWN:
-                log.debug("Suppressed ALT+TAB")
                 return 1
 
             # ------ ALT+ESC: suppress ESC ---------------------------------
             if vk == VK_ESCAPE and wParam == WM_SYSKEYDOWN:
-                log.debug("Suppressed ALT+ESC")
                 return 1
 
         return _CallNextHookEx(self._hook, nCode, wParam, lParam)
