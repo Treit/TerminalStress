@@ -24,6 +24,7 @@ from .watchdog import Watchdog, find_wt_process
 
 # Logging setup
 LOG_DIR = Path(__file__).parent.parent / "monkey_logs"
+DUMP_DIR = Path(__file__).parent.parent.parent / "crashdumps"
 
 
 def setup_logging(log_dir: Path, instance_id: int | None = None) -> Path:
@@ -361,16 +362,58 @@ def run_monkey(
                         logger.error(
                             "CONFIRMED HANG — Window did not recover after 3 retries."
                         )
+                        # Capture crash dump before killing the hung process
+                        dump_path = watchdog.capture_dump(DUMP_DIR)
+                        if dump_path:
+                            logger.info(f"Hang dump saved: {dump_path}")
+                        else:
+                            logger.warning("Failed to capture hang dump")
+
+                        watchdog.kill_process()
+                        logger.info(f"Killed hung process PID {pid}")
+
                         hang_events.append(
                             {
                                 "time": time.time(),
                                 "pid": pid,
                                 "last_action": recent_actions[-1] if recent_actions else None,
                                 "total_actions": total_actions,
+                                "dump_path": dump_path,
                                 **_capture_context(),
                             }
                         )
-                        break
+
+                        if not auto_launch:
+                            break
+
+                        # Try to reconnect or relaunch
+                        logger.info("Attempting to reconnect to Windows Terminal...")
+                        time.sleep(2)
+                        try:
+                            app, win, pid = connect_to_wt()
+                            watchdog = Watchdog(pid, memory_threshold_mb=memory_threshold_mb)
+                            watchdog.set_hwnd(win.handle)
+                            set_target_hwnd(win.handle)
+                            if pid not in all_pids:
+                                all_pids.append(pid)
+                            logger.info(f"Reconnected to Windows Terminal (PID {pid})")
+                        except RuntimeError:
+                            if auto_launch:
+                                logger.info("Launching new Windows Terminal instance...")
+                                try:
+                                    app, win, pid = launch_wt(profile=wt_profile)
+                                    watchdog = Watchdog(pid, memory_threshold_mb=memory_threshold_mb)
+                                    watchdog.set_hwnd(win.handle)
+                                    set_target_hwnd(win.handle)
+                                    if pid not in all_pids:
+                                        all_pids.append(pid)
+                                    logger.info(f"Launched and connected to Windows Terminal (PID {pid})")
+                                except Exception:
+                                    logger.error("Failed to launch Windows Terminal. Stopping.")
+                                    break
+                            else:
+                                logger.error("No Windows Terminal instance found. Stopping.")
+                                break
 
                 # Log health
                 is_leaking, growth = watchdog.check_memory_leak()

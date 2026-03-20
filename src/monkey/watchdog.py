@@ -13,6 +13,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import psutil
 
@@ -84,6 +85,106 @@ class Watchdog:
         except (psutil.NoSuchProcess, psutil.TimeoutExpired, psutil.AccessDenied):
             pass
         return None
+
+    def capture_dump(self, dump_dir) -> str | None:
+        """
+        Capture a memory dump of the target process (useful for hang analysis).
+        Tries procdump first, then falls back to MiniDumpWriteDump via dbghelp.
+        Returns the dump file path on success, None on failure.
+        """
+        if not self._process:
+            logger.warning("Cannot capture dump: no process handle")
+            return None
+
+        try:
+            if not self._process.is_running():
+                logger.warning("Cannot capture dump: process not running")
+                return None
+        except psutil.NoSuchProcess:
+            logger.warning("Cannot capture dump: process not found")
+            return None
+
+        dump_dir = Path(dump_dir)
+        dump_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        dump_path = dump_dir / f"WindowsTerminal_{self.state.pid}_{timestamp}.dmp"
+
+        # Try procdump first (produces richer dumps)
+        try:
+            import shutil
+            import subprocess
+            procdump = shutil.which("procdump") or shutil.which("procdump64")
+            if procdump:
+                logger.info(f"Capturing dump with procdump (PID {self.state.pid})...")
+                result = subprocess.run(
+                    [procdump, "-accepteula", "-ma", str(self.state.pid), str(dump_path)],
+                    capture_output=True, text=True, timeout=120,
+                )
+                if dump_path.exists() and dump_path.stat().st_size > 0:
+                    size_mb = dump_path.stat().st_size / (1024 * 1024)
+                    logger.info(f"Dump captured via procdump: {dump_path} ({size_mb:.1f}MB)")
+                    return str(dump_path)
+                logger.warning(f"procdump failed: {result.stderr.strip()}")
+        except Exception as e:
+            logger.warning(f"procdump attempt failed: {e}")
+
+        # Fallback: MiniDumpWriteDump via dbghelp.dll
+        try:
+            logger.info(f"Capturing dump with MiniDumpWriteDump (PID {self.state.pid})...")
+            PROCESS_ALL_ACCESS = 0x1F0FFF
+            GENERIC_WRITE = 0x40000000
+            CREATE_ALWAYS = 2
+            FILE_ATTRIBUTE_NORMAL = 0x80
+            INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+            MiniDumpWithFullMemory = 2
+
+            dbghelp = ctypes.WinDLL('dbghelp')
+
+            hProcess = kernel32.OpenProcess(PROCESS_ALL_ACCESS, False, self.state.pid)
+            if not hProcess:
+                logger.error(f"OpenProcess failed (error {kernel32.GetLastError()})")
+                return None
+
+            hFile = kernel32.CreateFileW(
+                str(dump_path), GENERIC_WRITE, 0, None,
+                CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, None,
+            )
+            if hFile == INVALID_HANDLE_VALUE:
+                kernel32.CloseHandle(hProcess)
+                logger.error(f"CreateFileW failed (error {kernel32.GetLastError()})")
+                return None
+
+            success = dbghelp.MiniDumpWriteDump(
+                hProcess, self.state.pid, hFile,
+                MiniDumpWithFullMemory, None, None, None,
+            )
+
+            kernel32.CloseHandle(hFile)
+            kernel32.CloseHandle(hProcess)
+
+            if success and dump_path.exists():
+                size_mb = dump_path.stat().st_size / (1024 * 1024)
+                logger.info(f"Dump captured via dbghelp: {dump_path} ({size_mb:.1f}MB)")
+                return str(dump_path)
+            else:
+                logger.error(f"MiniDumpWriteDump failed (error {kernel32.GetLastError()})")
+                if dump_path.exists():
+                    dump_path.unlink()
+                return None
+        except Exception as e:
+            logger.error(f"Dump capture failed: {e}")
+            return None
+
+    def kill_process(self) -> bool:
+        """Kill the target process. Returns True if successful."""
+        try:
+            if self._process and self._process.is_running():
+                self._process.kill()
+                self._process.wait(timeout=10)
+                return True
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.TimeoutExpired) as e:
+            logger.warning(f"Failed to kill process: {e}")
+        return False
 
     def is_window_responding(self) -> bool:
         """
