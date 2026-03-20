@@ -23,6 +23,7 @@
     .\repro.ps1 -Duration 60 -Instances 50
     .\repro.ps1 -Duration 30 -Instances 50 -NoAnalyze
     .\repro.ps1 -Duration 300 -Instances 10 -ActionProfile buffer-chaos
+    .\repro.ps1 -Duration 60 -Instances 30 -ActionProfile novelty-hunt
 #>
 param(
     [int]$Duration = 30,

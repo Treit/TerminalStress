@@ -245,6 +245,32 @@ else {
 
     Write-Host ""
     Write-Host "  Totals: $totalActions actions, $totalCrashes watchdog-detected crashes, $totalHangs hang sessions" -ForegroundColor White
+
+    $profileSummaries = foreach ($sf in $summaryFiles) {
+        try {
+            $s = Get-Content $sf.FullName -Raw | ConvertFrom-Json
+            [PSCustomObject]@{
+                Profile = if ($s.PSObject.Properties.Name -contains 'action_profile' -and $s.action_profile) { $s.action_profile } else { 'default' }
+                Actions = [int]$s.total_actions
+                Crashes = if ($s.PSObject.Properties.Name -contains 'total_crashes') { [int]$s.total_crashes } else { 0 }
+                Hangs = [int]$s.hang_count
+            }
+        } catch {
+        }
+    }
+
+    if ($profileSummaries) {
+        Write-Host "  By profile:" -ForegroundColor White
+        $profileSummaries |
+            Group-Object Profile |
+            Sort-Object Name |
+            ForEach-Object {
+                $actions = ($_.Group | Measure-Object -Property Actions -Sum).Sum
+                $crashes = ($_.Group | Measure-Object -Property Crashes -Sum).Sum
+                $hangs = ($_.Group | Measure-Object -Property Hangs -Sum).Sum
+                Write-Host "    $($_.Name): runs=$($_.Count), actions=$actions, crashes=$crashes, hangs=$hangs" -ForegroundColor DarkGray
+            }
+    }
 }
 
 # ── 3. Correlate Event Log PIDs with Monkey PIDs ──────────────────────
