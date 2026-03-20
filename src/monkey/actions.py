@@ -6,6 +6,7 @@ Actions are weighted — higher weight means the action is selected more often.
 """
 
 import ctypes
+import ctypes.wintypes
 import glob
 import logging
 import os
@@ -27,17 +28,45 @@ user32 = ctypes.windll.user32
 
 # The WT window handle, set by the runner before actions execute
 _target_hwnd: int = 0
+_target_pid: int = 0
 
 
-def set_target_hwnd(hwnd: int):
-    """Set the target WT window handle for focus verification."""
-    global _target_hwnd
+def set_target_hwnd(hwnd: int, pid: int | None = None):
+    """Set the target WT window handle and pid for focus verification."""
+    global _target_hwnd, _target_pid
     _target_hwnd = hwnd
+    if pid is not None:
+        _target_pid = pid
 
 
-def _is_wt_focused() -> bool:
-    """Check if the WT window is currently the foreground window."""
-    return _target_hwnd != 0 and user32.GetForegroundWindow() == _target_hwnd
+def _get_window_pid(hwnd: int) -> int:
+    """Return the pid owning a given hwnd, or 0 if unknown."""
+    if not hwnd:
+        return 0
+    pid = ctypes.wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return int(pid.value)
+
+
+def _is_target_foreground() -> bool:
+    """
+    Check whether the foreground window belongs to the target WT process.
+    This allows focused child windows inside WT while still rejecting foreign apps.
+    """
+    foreground = user32.GetForegroundWindow()
+    if _target_hwnd == 0 or foreground == 0:
+        return False
+    if foreground == _target_hwnd:
+        return True
+    return _target_pid != 0 and _get_window_pid(foreground) == _target_pid
+
+
+def _assert_target_focus_stable(samples: int = 3, delay_s: float = 0.02):
+    """Require WT focus to remain stable across several quick polls."""
+    for _ in range(samples):
+        if not _is_target_foreground():
+            raise FocusError("WT lost focus before input")
+        time.sleep(delay_s)
 
 
 def _safe_send_keys(keys: str, **kwargs):
@@ -45,33 +74,28 @@ def _safe_send_keys(keys: str, **kwargs):
     Wrapper around send_keys that verifies WT is focused immediately before
     sending. Raises FocusError if WT lost focus between action start and now.
     """
-    if not _is_wt_focused():
-        raise FocusError("WT lost focus before send_keys")
+    _assert_target_focus_stable()
     _raw_send_keys(keys, **kwargs)
 
 
 def _safe_click(coords):
     """Mouse click only if WT is focused."""
-    if not _is_wt_focused():
-        raise FocusError("WT lost focus before mouse click")
+    _assert_target_focus_stable()
     mouse.click(coords=coords)
 
 
 def _safe_mouse_press(coords):
-    if not _is_wt_focused():
-        raise FocusError("WT lost focus before mouse press")
+    _assert_target_focus_stable()
     mouse.press(coords=coords)
 
 
 def _safe_mouse_move(coords):
-    if not _is_wt_focused():
-        raise FocusError("WT lost focus before mouse move")
+    _assert_target_focus_stable()
     mouse.move(coords=coords)
 
 
 def _safe_mouse_release(coords):
-    if not _is_wt_focused():
-        raise FocusError("WT lost focus before mouse release")
+    _assert_target_focus_stable()
     mouse.release(coords=coords)
 
 # Timing constants
@@ -181,8 +205,17 @@ def _ensure_focused(win):
     to the wrong window.
     """
     hwnd = win.handle
+    foreground = user32.GetForegroundWindow()
+    foreground_pid = _get_window_pid(foreground)
+
+    # Never steal focus back from a foreign app; skip until WT is foreground again.
+    if foreground and foreground != hwnd and foreground_pid not in (0, _target_pid):
+        raise FocusError(
+            f"External foreground window (pid={foreground_pid}) detected; refusing to send input"
+        )
+
     try:
-        if user32.GetForegroundWindow() != hwnd:
+        if not _is_target_foreground():
             fore_tid = user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), None)
             our_tid = ctypes.windll.kernel32.GetCurrentThreadId()
             if fore_tid != our_tid:
@@ -190,12 +223,12 @@ def _ensure_focused(win):
             user32.SetForegroundWindow(hwnd)
             if fore_tid != our_tid:
                 user32.AttachThreadInput(our_tid, fore_tid, False)
-            time.sleep(0.05)
+            _assert_target_focus_stable(samples=5, delay_s=0.02)
     except Exception:
         pass
 
     # Verify focus was actually acquired
-    if user32.GetForegroundWindow() != hwnd:
+    if not _is_target_foreground():
         raise FocusError("WT is not the foreground window, skipping action")
 
 
