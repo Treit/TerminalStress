@@ -421,15 +421,21 @@ def prev_tab(win):
 
 
 def type_random_text(win):
-    """Type a random string of safe characters (no Tab or keys that could switch focus)."""
+    """Type a random string of safe characters, then press Escape to avoid contaminating the next command."""
     _ensure_focused(win)
-    length = random.randint(1, 80)
-    safe_chars = string.ascii_letters + string.digits + string.punctuation + " "
+    length = random.randint(1, 40)
+    safe_chars = string.ascii_letters + string.digits + " "
     text = "".join(random.choices(safe_chars, k=length))
-    # Escape special pywinauto characters
-    safe = text.replace("{", "{{").replace("}", "}}").replace("+", "{+}").replace("^", "{^}").replace("%", "{%}")
     try:
-        _safe_send_keys(safe, pause=0.01)
+        _safe_send_keys(text, pause=0.01)
+    except Exception:
+        pass
+    _brief_sleep(30)
+    # Press Escape then Ctrl+C to cancel partial input so next action starts clean
+    try:
+        _safe_send_keys("{ESC}")
+        _brief_sleep(20)
+        _safe_send_keys("^c")
     except Exception:
         pass
     _brief_sleep(50)
@@ -445,9 +451,11 @@ def type_enter(win):
 def type_command(win):
     """Type a harmless shell command and press Enter."""
     _ensure_focused(win)
-    # Ctrl+C to discard any partial input, then fresh command
+    # Clear any partial input: Escape, Ctrl+C, then wait for clean prompt
+    _safe_send_keys("{ESC}")
+    _brief_sleep(30)
     _safe_send_keys("^c")
-    _brief_sleep(50)
+    _brief_sleep(80)
     commands = [
         "echo hello",
         "dir",
@@ -464,7 +472,7 @@ def type_command(win):
     ]
     cmd = random.choice(commands)
     _safe_send_keys(cmd, pause=0.03)
-    _brief_sleep(30)
+    _brief_sleep(50)
     _safe_send_keys("{ENTER}")
     _brief_sleep(100)
 
@@ -826,13 +834,15 @@ def split_pane_down_profile(win):
 def type_shell_command(win):
     """Type a shell-appropriate command based on the current pane's shell."""
     _ensure_focused(win)
-    # Ctrl+C to discard any partial input
+    # Clear any partial input: Escape, Ctrl+C, wait for clean prompt
+    _safe_send_keys("{ESC}")
+    _brief_sleep(30)
     _safe_send_keys("^c")
-    _brief_sleep(50)
+    _brief_sleep(80)
     commands = _SHELL_COMMANDS.get(_current_shell, _SHELL_COMMANDS["cmd"])
     cmd = random.choice(commands)
     _safe_send_keys(cmd, pause=0.03)
-    _brief_sleep(30)
+    _brief_sleep(50)
     _safe_send_keys("{ENTER}")
     logger.info(f"type_shell_command [{_current_shell}]: {cmd}")
     _brief_sleep(100)
@@ -861,14 +871,21 @@ def run_terminal_stress(win):
     global _stress_proc
     _ensure_focused(win)
 
+    # Clear any partial input
+    _safe_send_keys("{ESC}")
+    _brief_sleep(30)
+    _safe_send_keys("^c")
+    _brief_sleep(80)
+
     exe = _find_stress_exe()
     if exe:
         cmd = exe.replace("\\", "\\\\")
     else:
         cmd = f"dotnet run --project {str(_STRESS_CSPROJ)}"
 
-    # Type the command into the focused terminal pane
-    _safe_send_keys(cmd + "{ENTER}", pause=0.02)
+    _safe_send_keys(cmd, pause=0.03)
+    _brief_sleep(50)
+    _safe_send_keys("{ENTER}")
     logger.info(f"Launched TerminalStress via: {cmd}")
     _brief_sleep(500)
 
@@ -913,15 +930,16 @@ def run_edit(win):
     if not exe:
         logger.debug("run_edit: edit.exe not found, skipping")
         return
-    # Ctrl+C to clear any partial input
+    # Clear any partial input
+    _safe_send_keys("{ESC}")
+    _brief_sleep(30)
     _safe_send_keys("^c")
-    _brief_sleep(50)
-    # Just use "edit" since it's on PATH, avoids backslash escaping issues
+    _brief_sleep(80)
     targets = ["", ".", "$env:TEMP\\monkey_scratch.txt"]
     target = random.choice(targets)
     cmd = f"edit {target}".strip()
     _safe_send_keys(cmd, pause=0.03)
-    _brief_sleep(30)
+    _brief_sleep(50)
     _safe_send_keys("{ENTER}")
     logger.info(f"Launched edit.exe: {cmd}")
     _brief_sleep(500)
