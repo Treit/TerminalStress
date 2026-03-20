@@ -70,3 +70,31 @@ To send messages to a Teams chat (e.g., sharing stress test results):
 ```
 
 **Important:** Avoid `ListChats` and `ListChatMessages` — these paginate through all chats/messages and routinely time out. Use `SearchTeamsMessages` to find chats and extract IDs instead.
+
+## Publishing Crash Reports
+
+After generating a crash analysis report, upload it to rtreit.com so the team can review it:
+
+```powershell
+# Generate the report (if not already done)
+python src/monkey/generate_crash_report.py
+
+# Upload to rtreit.com
+python src/monkey/upload_report.py crashdumps/crash-analysis-report.html
+
+# Upload with a custom name
+python src/monkey/upload_report.py crashdumps/crash-analysis-report.html --name "2026-03-20-overnight-crashes.html"
+```
+
+The uploaded report is viewable at `https://rtreit.com/api/reports/<filename>`. Browse all reports at `https://rtreit.com/reports/`.
+
+**Setup:** The upload API key is read from the `RTREIT_REPORTS_API_KEY` environment variable or a `.env` file in the repo root:
+```
+# .env (do NOT commit this file — it is gitignored)
+RTREIT_REPORTS_API_KEY=your_api_key_here
+```
+
+**Workflow for new bugs:** When you find new crashes during stress testing:
+1. Run the report generator: `python src/monkey/generate_crash_report.py`
+2. Upload the report: `python src/monkey/upload_report.py crashdumps/crash-analysis-report.html --name "descriptive-name.html"`
+3. Share the URL with the team
