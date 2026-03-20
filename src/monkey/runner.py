@@ -438,7 +438,7 @@ def run_monkey(
                     pass
 
             # Random delay between actions
-            time.sleep(random.uniform(0.01, 0.15))
+            time.sleep(random.uniform(0.005, 0.05))
 
     except Exception as e:
         logger.error(f"Unexpected error in monkey loop: {e}", exc_info=True)

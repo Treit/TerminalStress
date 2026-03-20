@@ -70,8 +70,8 @@ def _is_target_foreground() -> bool:
     return _target_pid != 0 and _get_window_pid(foreground) == _target_pid
 
 
-def _assert_target_focus_stable(samples: int = 3, delay_s: float = 0.02):
-    """Require WT focus to remain stable across several quick polls."""
+def _assert_target_focus_stable(samples: int = 2, delay_s: float = 0.005):
+    """Quick check that WT still has focus."""
     for _ in range(samples):
         if not _is_target_foreground():
             raise FocusError("WT lost focus before input")
@@ -187,15 +187,23 @@ def _safe_mouse_release(coords):
     mouse.release(coords=coords)
 
 # Timing constants
-MIN_ACTION_DELAY = 0.01
-MAX_ACTION_DELAY = 0.15
+MIN_ACTION_DELAY = 0.005
+MAX_ACTION_DELAY = 0.08
 RESIZE_HOLD_REPEATS_MIN = 3
 RESIZE_HOLD_REPEATS_MAX = 30
 
 
 def _brief_sleep(max_ms: int = 150):
-    """Sleep for a randomized short duration, never more than 0.5s."""
-    time.sleep(random.uniform(0.01, min(max_ms / 1000.0, 0.5)))
+    """Sleep for a randomized short duration."""
+    time.sleep(random.uniform(0.005, min(max_ms / 1000.0, 0.15)))
+
+
+def _clear_input_line():
+    """Send ESC + Ctrl+C to discard any partial input on the command line."""
+    _raw_send_keys("{ESC}")
+    time.sleep(0.015)
+    _raw_send_keys("^c")
+    time.sleep(0.03)
 
 # Known-bug mitigations (overridden by known_bugs.json at catalog build time)
 _mitigations: dict[str, object] = {}
@@ -293,13 +301,13 @@ def _ensure_focused(win):
     to the wrong window.
     """
     if _is_target_foreground():
-        _assert_target_focus_stable(samples=5, delay_s=0.02)
+        _assert_target_focus_stable(samples=2, delay_s=0.005)
         return
 
     if not _reclaim_focus(win):
         raise FocusError("Failed to restore focus to WT")
 
-    _assert_target_focus_stable(samples=5, delay_s=0.02)
+    _assert_target_focus_stable(samples=2, delay_s=0.005)
 
 
 def split_pane_right(win):
@@ -433,15 +441,11 @@ def type_random_text(win):
         _safe_send_keys(text, pause=0.01)
     except Exception:
         pass
-    _brief_sleep(30)
-    # Press Escape then Ctrl+C to cancel partial input so next action starts clean
     try:
-        _safe_send_keys("{ESC}")
-        _brief_sleep(20)
-        _safe_send_keys("^c")
+        _clear_input_line()
     except Exception:
         pass
-    _brief_sleep(50)
+    _brief_sleep(20)
 
 
 def type_enter(win):
@@ -454,11 +458,7 @@ def type_enter(win):
 def type_command(win):
     """Type a harmless shell command and press Enter."""
     _ensure_focused(win)
-    # Clear any partial input: Escape, Ctrl+C, then wait for clean prompt
-    _safe_send_keys("{ESC}")
-    _brief_sleep(30)
-    _safe_send_keys("^c")
-    _brief_sleep(80)
+    _clear_input_line()
     commands = [
         "echo hello",
         "dir",
@@ -837,11 +837,7 @@ def split_pane_down_profile(win):
 def type_shell_command(win):
     """Type a shell-appropriate command based on the current pane's shell."""
     _ensure_focused(win)
-    # Clear any partial input: Escape, Ctrl+C, wait for clean prompt
-    _safe_send_keys("{ESC}")
-    _brief_sleep(30)
-    _safe_send_keys("^c")
-    _brief_sleep(80)
+    _clear_input_line()
     commands = _SHELL_COMMANDS.get(_current_shell, _SHELL_COMMANDS["cmd"])
     cmd = random.choice(commands)
     _safe_send_keys(cmd, pause=0.03)
@@ -875,10 +871,7 @@ def run_terminal_stress(win):
     _ensure_focused(win)
 
     # Clear any partial input
-    _safe_send_keys("{ESC}")
-    _brief_sleep(30)
-    _safe_send_keys("^c")
-    _brief_sleep(80)
+    _clear_input_line()
 
     exe = _find_stress_exe()
     if exe:
@@ -933,11 +926,7 @@ def run_edit(win):
     if not exe:
         logger.debug("run_edit: edit.exe not found, skipping")
         return
-    # Clear any partial input
-    _safe_send_keys("{ESC}")
-    _brief_sleep(30)
-    _safe_send_keys("^c")
-    _brief_sleep(80)
+    _clear_input_line()
     targets = ["", ".", "$env:TEMP\\monkey_scratch.txt"]
     target = random.choice(targets)
     cmd = f"edit {target}".strip()
