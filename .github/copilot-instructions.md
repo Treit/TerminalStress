@@ -31,3 +31,4 @@ Passing any command-line argument switches the output encoding from UTF-8 to UTF
 - The solution file lives inside `src/` alongside the project and source files.
 - Use `uv` instead of `pip` for installing Python packages (e.g., `uv pip install` instead of `pip install`).
 - When creating or editing GitHub PRs with `gh` on PowerShell, always use `--body-file` instead of `--body` to avoid backtick escape corruption (PowerShell treats `` ` `` as an escape character, mangling markdown code spans).
+- Always launch the monkey stress tester via `src\monkey\run_monkey.cmd` (which opens a visible `conhost.exe` window), never inline in the current shell. Forward all arguments: `src\monkey\run_monkey.cmd --duration 600 --launch --action-profile buffer-chaos`.
