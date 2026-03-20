@@ -8,6 +8,13 @@
 # Monkey tester logs
 monkey_logs/
 
+# Crash dump files (large binaries, not for source control)
+crashdumps/*.dmp
+crashdumps/.analysis/
+
+# Generated crash report (regenerate with generate_crash_report.py)
+crashdumps/crash-analysis-report.html
+
 # User-specific files
 *.rsuser
 *.suo
