@@ -22,9 +22,28 @@ import pywinauto
 from pywinauto.keyboard import send_keys as _raw_send_keys
 from pywinauto import mouse
 
+from .input_lock import get_input_lock
+
 logger = logging.getLogger("monkey")
 
 user32 = ctypes.windll.user32
+kernel32 = ctypes.windll.kernel32
+
+# Win32 constants for modifier key flushing
+VK_MENU = 0x12
+VK_LMENU = 0xA4
+VK_RMENU = 0xA5
+VK_CONTROL = 0x11
+VK_LCONTROL = 0xA2
+VK_RCONTROL = 0xA3
+VK_SHIFT = 0x10
+VK_LSHIFT = 0xA0
+VK_RSHIFT = 0xA1
+VK_LWIN = 0x5B
+VK_RWIN = 0x5C
+VK_ESCAPE = 0x1B
+KEYEVENTF_KEYUP = 0x0002
+WM_KEYDOWN = 0x0100
 
 # The WT window handle, set by the runner before actions execute
 _target_hwnd: int = 0
@@ -46,6 +65,26 @@ def _get_window_pid(hwnd: int) -> int:
     pid = ctypes.wintypes.DWORD()
     user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
     return int(pid.value)
+
+
+def _get_window_class(hwnd: int) -> str:
+    """Return the window class name for a given hwnd."""
+    buf = ctypes.create_unicode_buffer(256)
+    user32.GetClassNameW(hwnd, buf, 256)
+    return buf.value
+
+
+def _flush_modifiers():
+    """
+    Send explicit key-up events for all modifier keys to clear any stuck state.
+    This prevents stale ALT/CTRL/SHIFT/WIN keys from causing Start Menu or
+    Alt+Tab activation.
+    """
+    for vk in (VK_MENU, VK_LMENU, VK_RMENU,
+               VK_CONTROL, VK_LCONTROL, VK_RCONTROL,
+               VK_SHIFT, VK_LSHIFT, VK_RSHIFT,
+               VK_LWIN, VK_RWIN):
+        user32.keybd_event(vk, 0, KEYEVENTF_KEYUP, 0)
 
 
 def _is_target_foreground() -> bool:
@@ -71,32 +110,49 @@ def _assert_target_focus_stable(samples: int = 3, delay_s: float = 0.02):
 
 def _safe_send_keys(keys: str, **kwargs):
     """
-    Wrapper around send_keys that verifies WT is focused immediately before
-    sending. Raises FocusError if WT lost focus between action start and now.
+    Wrapper around send_keys that:
+    1. Acquires the cross-process input lock (prevents interleaving with other instances)
+    2. Flushes stale modifier key state
+    3. Verifies WT is focused
+    4. Sends the keys
+    5. Flushes modifiers again as a safety net
+    Raises FocusError if WT lost focus between action start and now.
     """
-    _assert_target_focus_stable()
-    _raw_send_keys(keys, **kwargs)
+    lock = get_input_lock()
+    with lock:
+        _flush_modifiers()
+        _assert_target_focus_stable()
+        _raw_send_keys(keys, **kwargs)
+        _flush_modifiers()
 
 
 def _safe_click(coords):
-    """Mouse click only if WT is focused."""
-    _assert_target_focus_stable()
-    mouse.click(coords=coords)
+    """Mouse click only if WT is focused, serialized via input lock."""
+    lock = get_input_lock()
+    with lock:
+        _assert_target_focus_stable()
+        mouse.click(coords=coords)
 
 
 def _safe_mouse_press(coords):
-    _assert_target_focus_stable()
-    mouse.press(coords=coords)
+    lock = get_input_lock()
+    with lock:
+        _assert_target_focus_stable()
+        mouse.press(coords=coords)
 
 
 def _safe_mouse_move(coords):
-    _assert_target_focus_stable()
-    mouse.move(coords=coords)
+    lock = get_input_lock()
+    with lock:
+        _assert_target_focus_stable()
+        mouse.move(coords=coords)
 
 
 def _safe_mouse_release(coords):
-    _assert_target_focus_stable()
-    mouse.release(coords=coords)
+    lock = get_input_lock()
+    with lock:
+        _assert_target_focus_stable()
+        mouse.release(coords=coords)
 
 # Timing constants
 MIN_ACTION_DELAY = 0.01
@@ -198,15 +254,50 @@ def _profiled_action(
     return Action(name=name, weight=adjusted_weight, func=func, tags=tuple(tags))
 
 
+# Classes for rogue foreground windows that steal focus
+_ROGUE_WINDOW_CLASSES = frozenset({
+    "Windows.UI.Core.CoreWindow",       # Start Menu
+    "MultitaskingViewFrame",            # Alt+Tab task switcher
+    "XamlExplorerHostIslandWindow",     # Start Menu (newer Windows builds)
+    "Shell_TrayWnd",                    # Taskbar
+})
+
+
+def _dismiss_rogue_foreground():
+    """
+    If the foreground window is a known focus-stealer (Start Menu, Alt+Tab UI),
+    dismiss it by sending ESC. Returns True if a rogue window was dismissed.
+    """
+    fg = user32.GetForegroundWindow()
+    if not fg:
+        return False
+    cls = _get_window_class(fg)
+    if cls in _ROGUE_WINDOW_CLASSES:
+        logger.info(f"Dismissing rogue foreground window: class={cls}")
+        user32.PostMessageW(fg, WM_KEYDOWN, VK_ESCAPE, 0)
+        time.sleep(0.15)
+        return True
+    return False
+
+
 def _ensure_focused(win):
     """
     Bring the WT window to the foreground and VERIFY it's actually focused.
     Raises FocusError if WT cannot be focused, preventing input from going
     to the wrong window.
+
+    Enhanced with rogue window dismissal and ForegroundLockTimeout bypass.
     """
     hwnd = win.handle
     foreground = user32.GetForegroundWindow()
     foreground_pid = _get_window_pid(foreground)
+
+    # If a rogue window (Start Menu, Alt+Tab) has focus, dismiss it first
+    if foreground and foreground != hwnd and foreground_pid not in (0, _target_pid):
+        if _dismiss_rogue_foreground():
+            time.sleep(0.1)
+            foreground = user32.GetForegroundWindow()
+            foreground_pid = _get_window_pid(foreground)
 
     # Never steal focus back from a foreign app; skip until WT is foreground again.
     if foreground and foreground != hwnd and foreground_pid not in (0, _target_pid):
@@ -217,7 +308,7 @@ def _ensure_focused(win):
     try:
         if not _is_target_foreground():
             fore_tid = user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), None)
-            our_tid = ctypes.windll.kernel32.GetCurrentThreadId()
+            our_tid = kernel32.GetCurrentThreadId()
             if fore_tid != our_tid:
                 user32.AttachThreadInput(our_tid, fore_tid, True)
             user32.SetForegroundWindow(hwnd)
@@ -627,14 +718,23 @@ def stop_terminal_stress(win):
     _brief_sleep(200)
 
 
+# Actions that are inherently unsafe in multi-instance mode because they
+# deliberately cause focus loss or window state transitions that confuse
+# concurrent instances.
+_MULTI_INSTANCE_DISABLED = frozenset({
+    "minimize_restore_window",  # deliberately minimizes the window
+    "toggle_fullscreen",        # F11 transitions can cause focus loss
+})
+
+
 # Build the action catalog with weights.
 # Higher weight = more likely to be selected.
 # Pane resize actions have the highest weight since that's where bugs tend to hide.
-def build_action_catalog(action_profile: str = "default") -> list[Action]:
+def build_action_catalog(action_profile: str = "default", multi_instance: bool = False) -> list[Action]:
     global _mitigations
     _mitigations = load_known_bugs()
 
-    return [
+    catalog = [
         # Pane resize (high weight — this is where bugs like #7416 and #19996 live)
         _profiled_action("resize_pane_left", 15, resize_pane_left, "layout", action_profile=action_profile),
         _profiled_action("resize_pane_right", 15, resize_pane_right, "layout", action_profile=action_profile),
@@ -696,6 +796,16 @@ def build_action_catalog(action_profile: str = "default") -> list[Action]:
         _profiled_action("run_terminal_stress", 2, run_terminal_stress, "input", "stress", action_profile=action_profile),
         _profiled_action("stop_terminal_stress", 1, stop_terminal_stress, "input", "stress", action_profile=action_profile),
     ]
+
+    if multi_instance:
+        removed = [a.name for a in catalog if a.name in _MULTI_INSTANCE_DISABLED]
+        catalog = [a for a in catalog if a.name not in _MULTI_INSTANCE_DISABLED]
+        if removed:
+            logger.info(
+                f"Multi-instance mode: disabled focus-losing actions: {removed}"
+            )
+
+    return catalog
 
 
 def pick_action(
