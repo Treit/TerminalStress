@@ -15,6 +15,9 @@ crashdumps/.analysis/
 # Generated crash report (regenerate with generate_crash_report.py)
 crashdumps/crash-analysis-report.html
 
+# Environment secrets
+.env
+
 # User-specific files
 *.rsuser
 *.suo
