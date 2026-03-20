@@ -79,7 +79,7 @@ def _assert_target_focus_stable(samples: int = 2, delay_s: float = 0.005):
 
 
 def _reclaim_focus(win) -> bool:
-    """Aggressively restore focus to WT before sending input."""
+    """Try once to restore focus to WT. Fast-fail if it doesn't work."""
     hwnd = win.handle
     target_tid = user32.GetWindowThreadProcessId(hwnd, None)
 
@@ -88,70 +88,46 @@ def _reclaim_focus(win) -> bool:
     except Exception:
         pass
 
-    for _ in range(3):
-        foreground = user32.GetForegroundWindow()
-        fore_tid = user32.GetWindowThreadProcessId(foreground, None)
-        our_tid = ctypes.windll.kernel32.GetCurrentThreadId()
+    foreground = user32.GetForegroundWindow()
+    fore_tid = user32.GetWindowThreadProcessId(foreground, None)
+    our_tid = ctypes.windll.kernel32.GetCurrentThreadId()
 
+    try:
         try:
-            try:
-                user32.AllowSetForegroundWindow(ASFW_ANY)
-            except Exception:
-                pass
-            try:
-                user32.keybd_event(VK_MENU, 0, 0, 0)
-                user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
-            except Exception:
-                pass
-
-            if fore_tid and fore_tid != our_tid:
-                user32.AttachThreadInput(our_tid, fore_tid, True)
-            if fore_tid and target_tid and fore_tid != target_tid:
-                user32.AttachThreadInput(target_tid, fore_tid, True)
-            user32.BringWindowToTop(hwnd)
-            user32.SetForegroundWindow(hwnd)
-            user32.SetActiveWindow(hwnd)
-            user32.SetFocus(hwnd)
-        finally:
-            if fore_tid and fore_tid != our_tid:
-                user32.AttachThreadInput(our_tid, fore_tid, False)
-            if fore_tid and target_tid and fore_tid != target_tid:
-                user32.AttachThreadInput(target_tid, fore_tid, False)
-
-        time.sleep(0.05)
-        if _is_target_foreground():
-            return True
-
-        try:
-            win.set_focus()
+            user32.AllowSetForegroundWindow(ASFW_ANY)
         except Exception:
             pass
-        time.sleep(0.05)
-        if _is_target_foreground():
-            return True
-
         try:
-            user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW)
-            user32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW)
-            user32.SetForegroundWindow(hwnd)
+            user32.keybd_event(VK_MENU, 0, 0, 0)
+            user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
         except Exception:
             pass
-        time.sleep(0.05)
-        if _is_target_foreground():
-            return True
 
-        try:
-            rect = win.rectangle()
-            focus_x = max(rect.left + 40, rect.left + 5)
-            focus_y = max(rect.top + 80, rect.top + 5)
-            win.click_input(coords=(focus_x - rect.left, focus_y - rect.top))
-        except Exception:
-            pass
-        time.sleep(0.05)
-        if _is_target_foreground():
-            return True
+        if fore_tid and fore_tid != our_tid:
+            user32.AttachThreadInput(our_tid, fore_tid, True)
+        if fore_tid and target_tid and fore_tid != target_tid:
+            user32.AttachThreadInput(target_tid, fore_tid, True)
+        user32.BringWindowToTop(hwnd)
+        user32.SetForegroundWindow(hwnd)
+    finally:
+        if fore_tid and fore_tid != our_tid:
+            user32.AttachThreadInput(our_tid, fore_tid, False)
+        if fore_tid and target_tid and fore_tid != target_tid:
+            user32.AttachThreadInput(target_tid, fore_tid, False)
 
-    return False
+    time.sleep(0.02)
+    if _is_target_foreground():
+        return True
+
+    # Topmost dance as fallback
+    try:
+        user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW)
+        user32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW)
+        user32.SetForegroundWindow(hwnd)
+    except Exception:
+        pass
+    time.sleep(0.02)
+    return _is_target_foreground()
 
 
 def _safe_send_keys(keys: str, **kwargs):
