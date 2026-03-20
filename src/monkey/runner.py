@@ -24,6 +24,7 @@ from .watchdog import Watchdog, find_wt_process
 
 # Logging setup
 LOG_DIR = Path(__file__).parent.parent / "monkey_logs"
+PORTFOLIO_PROFILES = ("scroll-race", "buffer-chaos", "all-surfaces", "default")
 DUMP_DIR = Path(__file__).parent.parent.parent / "crashdumps"
 
 
@@ -547,7 +548,7 @@ Examples:
     parser.add_argument(
         "--action-profile",
         type=str,
-        choices=sorted(ACTION_PROFILES.keys()),
+        choices=sorted([*ACTION_PROFILES.keys(), "novelty-hunt"]),
         default="default",
         help="Bias action selection toward a specific set of WT code paths",
     )
@@ -570,8 +571,14 @@ Examples:
     if args.instances > 1:
         import subprocess as sp
         procs = []
+        base_seed = args.seed if args.seed is not None else random.randint(0, 2**32 - 1)
         for i in range(args.instances):
-            instance_seed = (args.seed or random.randint(0, 2**32 - 1)) + i
+            instance_profile = args.action_profile
+            if args.action_profile == "novelty-hunt":
+                instance_profile = PORTFOLIO_PROFILES[i % len(PORTFOLIO_PROFILES)]
+                instance_seed = base_seed + (i * 1009)
+            else:
+                instance_seed = base_seed + i
             cmd = [
                 sys.executable, "-m", "monkey.runner",
                 "--duration", str(args.duration),
@@ -579,13 +586,16 @@ Examples:
                 "--health-interval", str(args.health_interval),
                 "--memory-threshold", str(args.memory_threshold),
                 "--instance-id", str(i),
+                "--action-profile", instance_profile,
             ]
             if args.launch:
                 cmd.append("--launch")
             if args.wt_profile:
                 cmd += ["--wt-profile", args.wt_profile]
-            cmd += ["--action-profile", args.action_profile]
-            print(f"Starting monkey instance {i+1}/{args.instances} (seed={instance_seed})")
+            print(
+                f"Starting monkey instance {i+1}/{args.instances} "
+                f"(seed={instance_seed}, profile={instance_profile})"
+            )
             proc = sp.Popen(cmd, cwd=str(Path(__file__).parent.parent))
             procs.append(proc)
         for proc in procs:
