@@ -22,9 +22,28 @@ import pywinauto
 from pywinauto.keyboard import send_keys as _raw_send_keys
 from pywinauto import mouse
 
+from .input_lock import get_input_lock
+
 logger = logging.getLogger("monkey")
 
 user32 = ctypes.windll.user32
+kernel32 = ctypes.windll.kernel32
+
+# Win32 constants for modifier key flushing
+VK_MENU = 0x12
+VK_LMENU = 0xA4
+VK_RMENU = 0xA5
+VK_CONTROL = 0x11
+VK_LCONTROL = 0xA2
+VK_RCONTROL = 0xA3
+VK_SHIFT = 0x10
+VK_LSHIFT = 0xA0
+VK_RSHIFT = 0xA1
+VK_LWIN = 0x5B
+VK_RWIN = 0x5C
+VK_ESCAPE = 0x1B
+KEYEVENTF_KEYUP = 0x0002
+WM_KEYDOWN = 0x0100
 
 # The WT window handle, set by the runner before actions execute
 _target_hwnd: int = 0
@@ -48,6 +67,26 @@ def _get_window_pid(hwnd: int) -> int:
     return int(pid.value)
 
 
+def _get_window_class(hwnd: int) -> str:
+    """Return the window class name for a given hwnd."""
+    buf = ctypes.create_unicode_buffer(256)
+    user32.GetClassNameW(hwnd, buf, 256)
+    return buf.value
+
+
+def _flush_modifiers():
+    """
+    Send explicit key-up events for all modifier keys to clear any stuck state.
+    This prevents stale ALT/CTRL/SHIFT/WIN keys from causing Start Menu or
+    Alt+Tab activation.
+    """
+    for vk in (VK_MENU, VK_LMENU, VK_RMENU,
+               VK_CONTROL, VK_LCONTROL, VK_RCONTROL,
+               VK_SHIFT, VK_LSHIFT, VK_RSHIFT,
+               VK_LWIN, VK_RWIN):
+        user32.keybd_event(vk, 0, KEYEVENTF_KEYUP, 0)
+
+
 def _is_target_foreground() -> bool:
     """
     Check whether the foreground window belongs to the target WT process.
@@ -61,8 +100,9 @@ def _is_target_foreground() -> bool:
     return _target_pid != 0 and _get_window_pid(foreground) == _target_pid
 
 
-def _assert_target_focus_stable(samples: int = 3, delay_s: float = 0.02):
-    """Require WT focus to remain stable across several quick polls."""
+def _assert_target_focus_stable(samples: int = 1, delay_s: float = 0.01):
+    """Quick focus check. The keyboard hook now prevents most focus-stealing,
+    so a single fast poll is sufficient."""
     for _ in range(samples):
         if not _is_target_foreground():
             raise FocusError("WT lost focus before input")
@@ -71,43 +111,60 @@ def _assert_target_focus_stable(samples: int = 3, delay_s: float = 0.02):
 
 def _safe_send_keys(keys: str, **kwargs):
     """
-    Wrapper around send_keys that verifies WT is focused immediately before
-    sending. Raises FocusError if WT lost focus between action start and now.
+    Wrapper around send_keys that:
+    1. Acquires the cross-process input lock (prevents interleaving with other instances)
+    2. Flushes stale modifier key state
+    3. Verifies WT is focused
+    4. Sends the keys
+    5. Flushes modifiers again as a safety net
+    Raises FocusError if WT lost focus between action start and now.
     """
-    _assert_target_focus_stable()
-    _raw_send_keys(keys, **kwargs)
+    lock = get_input_lock()
+    with lock:
+        _flush_modifiers()
+        _assert_target_focus_stable()
+        _raw_send_keys(keys, **kwargs)
+        _flush_modifiers()
 
 
 def _safe_click(coords):
-    """Mouse click only if WT is focused."""
-    _assert_target_focus_stable()
-    mouse.click(coords=coords)
+    """Mouse click only if WT is focused, serialized via input lock."""
+    lock = get_input_lock()
+    with lock:
+        _assert_target_focus_stable()
+        mouse.click(coords=coords)
 
 
 def _safe_mouse_press(coords):
-    _assert_target_focus_stable()
-    mouse.press(coords=coords)
+    lock = get_input_lock()
+    with lock:
+        _assert_target_focus_stable()
+        mouse.press(coords=coords)
 
 
 def _safe_mouse_move(coords):
-    _assert_target_focus_stable()
-    mouse.move(coords=coords)
+    lock = get_input_lock()
+    with lock:
+        _assert_target_focus_stable()
+        mouse.move(coords=coords)
 
 
 def _safe_mouse_release(coords):
-    _assert_target_focus_stable()
-    mouse.release(coords=coords)
+    lock = get_input_lock()
+    with lock:
+        _assert_target_focus_stable()
+        mouse.release(coords=coords)
 
 # Timing constants
-MIN_ACTION_DELAY = 0.01
-MAX_ACTION_DELAY = 0.15
+MIN_ACTION_DELAY = 0.005
+MAX_ACTION_DELAY = 0.05
 RESIZE_HOLD_REPEATS_MIN = 3
 RESIZE_HOLD_REPEATS_MAX = 30
 
 
 def _brief_sleep(max_ms: int = 150):
-    """Sleep for a randomized short duration, never more than 0.5s."""
-    time.sleep(random.uniform(0.01, min(max_ms / 1000.0, 0.5)))
+    """Sleep for a randomized short duration to let WT process input."""
+    time.sleep(random.uniform(0.005, min(max_ms / 2000.0, 0.25)))
 
 # Known-bug mitigations (overridden by known_bugs.json at catalog build time)
 _mitigations: dict[str, object] = {}
@@ -198,32 +255,59 @@ def _profiled_action(
     return Action(name=name, weight=adjusted_weight, func=func, tags=tuple(tags))
 
 
+# Classes for rogue foreground windows that steal focus
+_ROGUE_WINDOW_CLASSES = frozenset({
+    "Windows.UI.Core.CoreWindow",       # Start Menu
+    "MultitaskingViewFrame",            # Alt+Tab task switcher
+    "XamlExplorerHostIslandWindow",     # Start Menu (newer Windows builds)
+    "Shell_TrayWnd",                    # Taskbar
+})
+
+
+def _dismiss_rogue_foreground():
+    """
+    If the foreground window is a known focus-stealer (Start Menu, Alt+Tab UI),
+    dismiss it by sending ESC. Returns True if a rogue window was dismissed.
+    """
+    fg = user32.GetForegroundWindow()
+    if not fg:
+        return False
+    cls = _get_window_class(fg)
+    if cls in _ROGUE_WINDOW_CLASSES:
+        logger.info(f"Dismissing rogue foreground window: class={cls}")
+        user32.PostMessageW(fg, WM_KEYDOWN, VK_ESCAPE, 0)
+        time.sleep(0.15)
+        return True
+    return False
+
+
 def _ensure_focused(win):
     """
     Bring the WT window to the foreground and VERIFY it's actually focused.
     Raises FocusError if WT cannot be focused, preventing input from going
     to the wrong window.
+
+    Always attempts to reclaim focus for WT via SetForegroundWindow.
     """
     hwnd = win.handle
     foreground = user32.GetForegroundWindow()
     foreground_pid = _get_window_pid(foreground)
 
-    # Never steal focus back from a foreign app; skip until WT is foreground again.
+    # If a rogue window (Start Menu, Alt+Tab) has focus, dismiss it first
     if foreground and foreground != hwnd and foreground_pid not in (0, _target_pid):
-        raise FocusError(
-            f"External foreground window (pid={foreground_pid}) detected; refusing to send input"
-        )
+        _dismiss_rogue_foreground()
 
+    # Try to bring WT to the foreground
     try:
         if not _is_target_foreground():
             fore_tid = user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), None)
-            our_tid = ctypes.windll.kernel32.GetCurrentThreadId()
+            our_tid = kernel32.GetCurrentThreadId()
             if fore_tid != our_tid:
                 user32.AttachThreadInput(our_tid, fore_tid, True)
             user32.SetForegroundWindow(hwnd)
             if fore_tid != our_tid:
                 user32.AttachThreadInput(our_tid, fore_tid, False)
-            _assert_target_focus_stable(samples=5, delay_s=0.02)
+            _assert_target_focus_stable(samples=2, delay_s=0.01)
     except Exception:
         pass
 
@@ -263,7 +347,7 @@ def resize_pane_left(win):
     repeats = _get_resize_repeats()
     for _ in range(repeats):
         _safe_send_keys("%+{LEFT}")
-        time.sleep(random.uniform(0.02, 0.08))
+        time.sleep(random.uniform(0.005, 0.03))
 
 
 def resize_pane_right(win):
@@ -272,7 +356,7 @@ def resize_pane_right(win):
     repeats = _get_resize_repeats()
     for _ in range(repeats):
         _safe_send_keys("%+{RIGHT}")
-        time.sleep(random.uniform(0.02, 0.08))
+        time.sleep(random.uniform(0.005, 0.03))
 
 
 def resize_pane_up(win):
@@ -281,7 +365,7 @@ def resize_pane_up(win):
     repeats = _get_resize_repeats()
     for _ in range(repeats):
         _safe_send_keys("%+{UP}")
-        time.sleep(random.uniform(0.02, 0.08))
+        time.sleep(random.uniform(0.005, 0.03))
 
 
 def resize_pane_down(win):
@@ -290,7 +374,7 @@ def resize_pane_down(win):
     repeats = _get_resize_repeats()
     for _ in range(repeats):
         _safe_send_keys("%+{DOWN}")
-        time.sleep(random.uniform(0.02, 0.08))
+        time.sleep(random.uniform(0.005, 0.03))
 
 
 def focus_pane_left(win):
@@ -410,7 +494,7 @@ def scroll_up(win):
     repeats = random.randint(1, 20)
     for _ in range(repeats):
         _safe_send_keys("^+{UP}")
-        time.sleep(0.02)
+        time.sleep(0.005)
 
 
 def scroll_down(win):
@@ -419,7 +503,7 @@ def scroll_down(win):
     repeats = random.randint(1, 20)
     for _ in range(repeats):
         _safe_send_keys("^+{DOWN}")
-        time.sleep(0.02)
+        time.sleep(0.005)
 
 
 def resize_window(win):
@@ -474,7 +558,7 @@ def zoom_in(win):
     repeats = random.randint(1, 5)
     for _ in range(repeats):
         _safe_send_keys("^{=}")
-        time.sleep(0.05)
+        time.sleep(0.01)
 
 
 def zoom_out(win):
@@ -483,7 +567,7 @@ def zoom_out(win):
     repeats = random.randint(1, 5)
     for _ in range(repeats):
         _safe_send_keys("^{-}")
-        time.sleep(0.05)
+        time.sleep(0.01)
 
 
 def zoom_reset(win):
@@ -528,9 +612,9 @@ def mouse_drag_random(win):
         x2 = random.randint(rect.left + 10, max(rect.left + 11, rect.right - 10))
         y2 = random.randint(rect.top + 30, max(rect.top + 31, rect.bottom - 10))
         _safe_mouse_press(coords=(x1, y1))
-        time.sleep(0.02)
+        time.sleep(0.005)
         _safe_mouse_move(coords=(x2, y2))
-        time.sleep(0.02)
+        time.sleep(0.005)
         _safe_mouse_release(coords=(x2, y2))
     except Exception as e:
         logger.warning(f"mouse_drag_random failed: {e}")
@@ -627,14 +711,23 @@ def stop_terminal_stress(win):
     _brief_sleep(200)
 
 
+# Actions that are inherently unsafe in multi-instance mode because they
+# deliberately cause focus loss or window state transitions that confuse
+# concurrent instances.
+_MULTI_INSTANCE_DISABLED = frozenset({
+    "minimize_restore_window",  # deliberately minimizes the window
+    "toggle_fullscreen",        # F11 transitions can cause focus loss
+})
+
+
 # Build the action catalog with weights.
 # Higher weight = more likely to be selected.
 # Pane resize actions have the highest weight since that's where bugs tend to hide.
-def build_action_catalog(action_profile: str = "default") -> list[Action]:
+def build_action_catalog(action_profile: str = "default", multi_instance: bool = False) -> list[Action]:
     global _mitigations
     _mitigations = load_known_bugs()
 
-    return [
+    catalog = [
         # Pane resize (high weight — this is where bugs like #7416 and #19996 live)
         _profiled_action("resize_pane_left", 15, resize_pane_left, "layout", action_profile=action_profile),
         _profiled_action("resize_pane_right", 15, resize_pane_right, "layout", action_profile=action_profile),
@@ -696,6 +789,16 @@ def build_action_catalog(action_profile: str = "default") -> list[Action]:
         _profiled_action("run_terminal_stress", 2, run_terminal_stress, "input", "stress", action_profile=action_profile),
         _profiled_action("stop_terminal_stress", 1, stop_terminal_stress, "input", "stress", action_profile=action_profile),
     ]
+
+    if multi_instance:
+        removed = [a.name for a in catalog if a.name in _MULTI_INSTANCE_DISABLED]
+        catalog = [a for a in catalog if a.name not in _MULTI_INSTANCE_DISABLED]
+        if removed:
+            logger.info(
+                f"Multi-instance mode: disabled focus-losing actions: {removed}"
+            )
+
+    return catalog
 
 
 def pick_action(

@@ -5,6 +5,8 @@ Orchestrates the action loop, watchdog monitoring, and logging.
 """
 
 import argparse
+import ctypes
+import ctypes.wintypes
 import json
 import logging
 import os
@@ -19,7 +21,9 @@ from pathlib import Path
 import psutil
 from pywinauto.application import Application
 
-from .actions import ACTION_PROFILES, FocusError, build_action_catalog, pick_action, set_target_hwnd
+from .actions import ACTION_PROFILES, FocusError, MIN_ACTION_DELAY, MAX_ACTION_DELAY, build_action_catalog, pick_action, set_target_hwnd, _flush_modifiers
+from .input_guard import InputGuard
+from .input_lock import get_input_lock
 from .watchdog import Watchdog, find_wt_process
 
 # Logging setup
@@ -27,6 +31,37 @@ LOG_DIR = Path(__file__).parent.parent / "monkey_logs"
 PORTFOLIO_PROFILES = ("scroll-race", "buffer-chaos", "all-surfaces", "default")
 DUMP_DIR = Path(__file__).parent.parent.parent / "crashdumps"
 
+# Win32 constants for ForegroundLockTimeout
+SPI_GETFOREGROUNDLOCKTIMEOUT = 0x2000
+SPI_SETFOREGROUNDLOCKTIMEOUT = 0x2001
+_user32 = ctypes.windll.user32
+
+
+def _disable_foreground_lock_timeout() -> int:
+    """
+    Disable Windows' ForegroundLockTimeout so SetForegroundWindow works
+    even from background processes. Returns the previous timeout value.
+    """
+    old_timeout = ctypes.wintypes.DWORD()
+    _user32.SystemParametersInfoW(
+        SPI_GETFOREGROUNDLOCKTIMEOUT, 0, ctypes.byref(old_timeout), 0
+    )
+    _user32.SystemParametersInfoW(
+        SPI_SETFOREGROUNDLOCKTIMEOUT, 0, None, 0
+    )
+    return old_timeout.value
+
+
+def _restore_foreground_lock_timeout(timeout: int) -> None:
+    """Restore the ForegroundLockTimeout to its previous value.
+
+    SPI_SETFOREGROUNDLOCKTIMEOUT expects pvParam to be the timeout value
+    reinterpreted as a pointer (PVOID), not a pointer to the value.
+    """
+    _user32.SystemParametersInfoW(
+        SPI_SETFOREGROUNDLOCKTIMEOUT, 0,
+        ctypes.cast(timeout, ctypes.c_void_p), 0
+    )
 
 def setup_logging(log_dir: Path, instance_id: int | None = None) -> Path:
     log_dir.mkdir(exist_ok=True)
@@ -102,6 +137,7 @@ def run_monkey(
     memory_threshold_mb: float = 2048.0,
     wt_profile: str | None = None,
     action_profile: str = "default",
+    multi_instance: bool = False,
 ):
     """
     Main monkey test loop.
@@ -114,282 +150,174 @@ def run_monkey(
         memory_threshold_mb: Memory threshold for leak warnings.
         wt_profile: WT profile to use when launching (e.g. "Command Prompt").
         action_profile: Bias action selection toward specific WT subsystems.
+        multi_instance: True when running as part of a multi-instance session.
     """
     logger = logging.getLogger("monkey")
 
-    if seed is not None:
-        random.seed(seed)
-        logger.info(f"Random seed: {seed}")
-    else:
-        seed = random.randint(0, 2**32 - 1)
-        random.seed(seed)
-        logger.info(f"Random seed (auto): {seed}")
+    # --- Focus protection setup (cleaned up in outer finally) ---
+    old_fg_timeout = _disable_foreground_lock_timeout()
+    logger.info(f"Disabled ForegroundLockTimeout (was {old_fg_timeout}ms)")
+    input_guard = InputGuard()
+    input_guard.start()
+    logger.info("InputGuard keyboard hook active")
 
-    # Connect or launch
-    try:
-        app, win, pid = connect_to_wt()
-    except RuntimeError:
-        if auto_launch:
-            logger.info("Launching Windows Terminal...")
-            app, win, pid = launch_wt(profile=wt_profile)
+    try:  # outer try — guarantees guard cleanup on ANY exit path
+
+        if seed is not None:
+            random.seed(seed)
+            logger.info(f"Random seed: {seed}")
         else:
-            raise
+            seed = random.randint(0, 2**32 - 1)
+            random.seed(seed)
+            logger.info(f"Random seed (auto): {seed}")
 
-    logger.info(f"Connected to Windows Terminal (PID {pid})")
+        # Connect or launch
+        try:
+            app, win, pid = connect_to_wt()
+        except RuntimeError:
+            if auto_launch:
+                logger.info("Launching Windows Terminal...")
+                app, win, pid = launch_wt(profile=wt_profile)
+            else:
+                raise
 
-    # Track all PIDs and crashes for post-run analysis
-    all_pids = [pid]
-    crash_events = []
-    hang_events = []
+        logger.info(f"Connected to Windows Terminal (PID {pid})")
 
-    # Initialize watchdog
-    watchdog = Watchdog(pid, memory_threshold_mb=memory_threshold_mb)
-    watchdog.set_hwnd(win.handle)
-    set_target_hwnd(win.handle, pid)
+        # Track all PIDs and crashes for post-run analysis
+        all_pids = [pid]
+        crash_events = []
+        hang_events = []
 
-    # Take initial snapshot
-    snap = watchdog.take_snapshot()
-    logger.info(
-        f"Initial health: RSS={snap.memory_rss_mb:.1f}MB, "
-        f"responding={snap.is_responding}"
-    )
+        # Initialize watchdog
+        watchdog = Watchdog(pid, memory_threshold_mb=memory_threshold_mb)
+        watchdog.set_hwnd(win.handle)
+        set_target_hwnd(win.handle, pid)
 
-    # Build action catalog
-    catalog = build_action_catalog(action_profile=action_profile)
-    total_weight = sum(a.weight for a in catalog)
-    logger.info(
-        f"Action catalog: {len(catalog)} actions, total weight={total_weight}, "
-        f"profile={action_profile}"
-    )
+        # Take initial snapshot
+        snap = watchdog.take_snapshot()
+        logger.info(
+            f"Initial health: RSS={snap.memory_rss_mb:.1f}MB, "
+            f"responding={snap.is_responding}"
+        )
 
-    # Stats
-    action_counts: dict[str, int] = {}
-    action_errors: dict[str, int] = {}
-    tag_counts: dict[str, int] = {}
-    total_actions = 0
-    start_time = time.time()
-    last_health_check = start_time
-    recent_actions: deque[str] = deque(maxlen=6)
-    recent_tags: deque[str] = deque(maxlen=12)
+        # Build action catalog
+        catalog = build_action_catalog(action_profile=action_profile, multi_instance=multi_instance)
+        total_weight = sum(a.weight for a in catalog)
+        logger.info(
+            f"Action catalog: {len(catalog)} actions, total weight={total_weight}, "
+            f"profile={action_profile}"
+        )
 
-    # Graceful shutdown
-    running = True
+        # Stats
+        action_counts: dict[str, int] = {}
+        action_errors: dict[str, int] = {}
+        tag_counts: dict[str, int] = {}
+        total_actions = 0
+        start_time = time.time()
+        last_health_check = start_time
+        recent_actions: deque[str] = deque(maxlen=6)
+        recent_tags: deque[str] = deque(maxlen=12)
 
-    def handle_signal(signum, frame):
-        nonlocal running
-        logger.info(f"Received signal {signum}, shutting down...")
-        running = False
+        # Graceful shutdown
+        running = True
 
-    signal.signal(signal.SIGINT, handle_signal)
-    signal.signal(signal.SIGTERM, handle_signal)
+        def handle_signal(signum, frame):
+            nonlocal running
+            logger.info(f"Received signal {signum}, shutting down...")
+            running = False
 
-    logger.info(
-        f"Starting monkey test (duration={'forever' if duration_seconds == 0 else f'{duration_seconds}s'})"
-    )
-    logger.info("=" * 72)
+        signal.signal(signal.SIGINT, handle_signal)
+        signal.signal(signal.SIGTERM, handle_signal)
 
-    def _capture_context(current_action=None) -> dict:
-        actions = list(recent_actions)
-        tags = list(dict.fromkeys(recent_tags))
-        if current_action is not None:
-            actions = (actions + [current_action.name])[-6:]
-            tags = list(dict.fromkeys(tags + list(current_action.tags)))
-        return {
-            "recent_actions": actions,
-            "recent_tags": tags,
-        }
+        logger.info(
+            f"Starting monkey test (duration={'forever' if duration_seconds == 0 else f'{duration_seconds}s'})"
+        )
+        logger.info("=" * 72)
 
-    try:
-        while running:
-            elapsed = time.time() - start_time
-            if duration_seconds > 0 and elapsed >= duration_seconds:
-                logger.info("Duration reached, stopping.")
-                break
+        def _capture_context(current_action=None) -> dict:
+            actions = list(recent_actions)
+            tags = list(dict.fromkeys(recent_tags))
+            if current_action is not None:
+                actions = (actions + [current_action.name])[-6:]
+                tags = list(dict.fromkeys(tags + list(current_action.tags)))
+            return {
+                "recent_actions": actions,
+                "recent_tags": tags,
+            }
 
-            # Pick and execute a random action
-            action = pick_action(
-                catalog,
-                recent_actions=tuple(recent_actions),
-                recent_tags=tuple(recent_tags),
-            )
-            total_actions += 1
-            action_counts[action.name] = action_counts.get(action.name, 0) + 1
+        try:
+            while running:
+                elapsed = time.time() - start_time
+                if duration_seconds > 0 and elapsed >= duration_seconds:
+                    logger.info("Duration reached, stopping.")
+                    break
 
-            try:
-                logger.info(f"[{total_actions}] {action.name}")
-                action.func(win)
-                recent_actions.append(action.name)
-                for tag in action.tags:
-                    recent_tags.append(tag)
-                    tag_counts[tag] = tag_counts.get(tag, 0) + 1
-            except FocusError as e:
-                if "External foreground window" in str(e):
-                    logger.info(f"[{total_actions}] {action.name} paused: {e}")
-                else:
-                    logger.debug(f"[{total_actions}] {action.name} skipped ({e})")
-                total_actions -= 1
-                remaining = action_counts.get(action.name, 0) - 1
-                if remaining > 0:
-                    action_counts[action.name] = remaining
-                else:
-                    action_counts.pop(action.name, None)
-                _brief_sleep_ms = random.uniform(0.05, 0.2)
-                time.sleep(_brief_sleep_ms)
-                continue
-            except Exception as e:
-                action_errors[action.name] = action_errors.get(action.name, 0) + 1
-                logger.warning(f"[{total_actions}] {action.name} FAILED: {e}")
+                # Pick and execute a random action
+                action = pick_action(
+                    catalog,
+                    recent_actions=tuple(recent_actions),
+                    recent_tags=tuple(recent_tags),
+                )
+                total_actions += 1
+                action_counts[action.name] = action_counts.get(action.name, 0) + 1
 
-                # Check if WT is still alive after an error
-                if not watchdog.is_process_running():
-                    exit_code = watchdog.get_exit_code()
-                    if exit_code is not None and exit_code == 0:
-                        logger.warning(
-                            f"Windows Terminal exited normally (code 0) after action '{action.name}'. "
-                            "This is likely the last tab/pane being closed, not a crash."
-                        )
+                try:
+                    logger.info(f"[{total_actions}] {action.name}")
+                    action.func(win)
+                    recent_actions.append(action.name)
+                    # Reset focus backoff on success
+                    run_monkey._focus_retry_count = 0
+                    for tag in action.tags:
+                        recent_tags.append(tag)
+                        tag_counts[tag] = tag_counts.get(tag, 0) + 1
+                except FocusError as e:
+                    if "External foreground window" in str(e):
+                        logger.info(f"[{total_actions}] {action.name} paused: {e}")
                     else:
-                        logger.error(
-                            f"Windows Terminal process CRASHED (exit code: {exit_code})!"
-                        )
-                        watchdog.state.crash_detected = True
-                        crash_events.append(
-                            {
-                                "time": time.time(),
-                                "pid": pid,
-                                "exit_code": exit_code,
-                                "last_action": action.name,
-                                "total_actions": total_actions,
-                                **_capture_context(action),
-                            }
-                        )
-                        if not auto_launch:
-                            break
-                    # Try to reconnect or relaunch
-                    logger.info("Attempting to reconnect to Windows Terminal...")
-                    time.sleep(2)
-                    try:
-                        app, win, pid = connect_to_wt()
-                        watchdog = Watchdog(pid, memory_threshold_mb=memory_threshold_mb)
-                        watchdog.set_hwnd(win.handle)
-                        set_target_hwnd(win.handle, pid)
-                        if pid not in all_pids:
-                            all_pids.append(pid)
-                        logger.info(f"Reconnected to Windows Terminal (PID {pid})")
-                    except RuntimeError:
-                        if auto_launch:
-                            logger.info("Launching new Windows Terminal instance...")
-                            try:
-                                app, win, pid = launch_wt(profile=wt_profile)
-                                watchdog = Watchdog(pid, memory_threshold_mb=memory_threshold_mb)
-                                watchdog.set_hwnd(win.handle)
-                                set_target_hwnd(win.handle, pid)
-                                if pid not in all_pids:
-                                    all_pids.append(pid)
-                                logger.info(f"Launched and connected to Windows Terminal (PID {pid})")
-                            except Exception:
-                                logger.error("Failed to launch Windows Terminal. Stopping.")
+                        logger.debug(f"[{total_actions}] {action.name} skipped ({e})")
+                    total_actions -= 1
+                    remaining = action_counts.get(action.name, 0) - 1
+                    if remaining > 0:
+                        action_counts[action.name] = remaining
+                    else:
+                        action_counts.pop(action.name, None)
+                    # Flush modifier keys to clear any stuck state
+                    _flush_modifiers()
+                    # Brief backoff with jitter to avoid focus storms
+                    focus_retry_count = getattr(run_monkey, '_focus_retry_count', 0)
+                    backoff = min(0.02 * (2 ** focus_retry_count), 0.2)
+                    run_monkey._focus_retry_count = focus_retry_count + 1
+                    time.sleep(backoff + random.uniform(0, 0.02))
+                    continue
+                except Exception as e:
+                    action_errors[action.name] = action_errors.get(action.name, 0) + 1
+                    logger.warning(f"[{total_actions}] {action.name} FAILED: {e}")
+
+                    # Check if WT is still alive after an error
+                    if not watchdog.is_process_running():
+                        exit_code = watchdog.get_exit_code()
+                        if exit_code is not None and exit_code == 0:
+                            logger.warning(
+                                f"Windows Terminal exited normally (code 0) after action '{action.name}'. "
+                                "This is likely the last tab/pane being closed, not a crash."
+                            )
+                        else:
+                            logger.error(
+                                f"Windows Terminal process CRASHED (exit code: {exit_code})!"
+                            )
+                            watchdog.state.crash_detected = True
+                            crash_events.append(
+                                {
+                                    "time": time.time(),
+                                    "pid": pid,
+                                    "exit_code": exit_code,
+                                    "last_action": action.name,
+                                    "total_actions": total_actions,
+                                    **_capture_context(action),
+                                }
+                            )
+                            if not auto_launch:
                                 break
-                        else:
-                            logger.error("No Windows Terminal instance found. Stopping.")
-                            break
-
-            # Periodic health check
-            now = time.time()
-            if now - last_health_check >= health_check_interval:
-                last_health_check = now
-
-                # Check if WT is still running
-                if not watchdog.is_process_running():
-                    exit_code = watchdog.get_exit_code()
-                    if exit_code is not None and exit_code == 0:
-                        logger.warning("Windows Terminal exited normally (code 0) during health check.")
-                    else:
-                        logger.error(f"Windows Terminal process CRASHED (exit code: {exit_code})!")
-                        crash_events.append(
-                            {
-                                "time": time.time(),
-                                "pid": pid,
-                                "exit_code": exit_code,
-                                "last_action": "health_check",
-                                "total_actions": total_actions,
-                                **_capture_context(),
-                            }
-                        )
-                        if not auto_launch:
-                            break
-                    logger.info("Attempting to reconnect to Windows Terminal...")
-                    time.sleep(2)
-                    try:
-                        app, win, pid = connect_to_wt()
-                        watchdog = Watchdog(pid, memory_threshold_mb=memory_threshold_mb)
-                        watchdog.set_hwnd(win.handle)
-                        set_target_hwnd(win.handle, pid)
-                        if pid not in all_pids:
-                            all_pids.append(pid)
-                        logger.info(f"Reconnected to Windows Terminal (PID {pid})")
-                        continue
-                    except RuntimeError:
-                        if auto_launch:
-                            logger.info("Launching new Windows Terminal instance...")
-                            try:
-                                app, win, pid = launch_wt(profile=wt_profile)
-                                watchdog = Watchdog(pid, memory_threshold_mb=memory_threshold_mb)
-                                watchdog.set_hwnd(win.handle)
-                                set_target_hwnd(win.handle, pid)
-                                if pid not in all_pids:
-                                    all_pids.append(pid)
-                                logger.info(f"Launched and connected to Windows Terminal (PID {pid})")
-                                continue
-                            except Exception:
-                                logger.error("Failed to launch Windows Terminal. Stopping.")
-                                break
-                        else:
-                            logger.error("No Windows Terminal instance found. Stopping.")
-                            break
-
-                # Check if WT is responding
-                snap = watchdog.take_snapshot()
-                if not snap.is_responding:
-                    logger.error(
-                        f"Windows Terminal is NOT RESPONDING (hang detected)! "
-                        f"Actions so far: {total_actions}"
-                    )
-                    # Continue to log a few more attempts to confirm
-                    for i in range(3):
-                        time.sleep(2)
-                        snap = watchdog.take_snapshot()
-                        if snap.is_responding:
-                            logger.warning("Window recovered after hang.")
-                            break
-                    else:
-                        logger.error(
-                            "CONFIRMED HANG — Window did not recover after 3 retries."
-                        )
-                        # Capture crash dump before killing the hung process
-                        dump_path = watchdog.capture_dump(DUMP_DIR)
-                        if dump_path:
-                            logger.info(f"Hang dump saved: {dump_path}")
-                        else:
-                            logger.warning("Failed to capture hang dump")
-
-                        watchdog.kill_process()
-                        logger.info(f"Killed hung process PID {pid}")
-
-                        hang_events.append(
-                            {
-                                "time": time.time(),
-                                "pid": pid,
-                                "last_action": recent_actions[-1] if recent_actions else None,
-                                "total_actions": total_actions,
-                                "dump_path": dump_path,
-                                **_capture_context(),
-                            }
-                        )
-
-                        if not auto_launch:
-                            break
-
                         # Try to reconnect or relaunch
                         logger.info("Attempting to reconnect to Windows Terminal...")
                         time.sleep(2)
@@ -419,81 +347,214 @@ def run_monkey(
                                 logger.error("No Windows Terminal instance found. Stopping.")
                                 break
 
-                # Log health
-                is_leaking, growth = watchdog.check_memory_leak()
-                logger.info(
-                    f"[HEALTH] actions={total_actions}, elapsed={elapsed:.0f}s, "
-                    f"RSS={snap.memory_rss_mb:.1f}MB (growth={growth:+.1f}MB), "
-                    f"CPU={snap.cpu_percent:.0f}%, responding={snap.is_responding}"
-                )
-                if is_leaking:
-                    logger.warning(
-                        f"POSSIBLE MEMORY LEAK: RSS={snap.memory_rss_mb:.1f}MB "
-                        f"exceeds threshold of {watchdog.memory_threshold_mb}MB"
+                # Periodic health check
+                now = time.time()
+                if now - last_health_check >= health_check_interval:
+                    last_health_check = now
+
+                    # Check if WT is still running
+                    if not watchdog.is_process_running():
+                        exit_code = watchdog.get_exit_code()
+                        if exit_code is not None and exit_code == 0:
+                            logger.warning("Windows Terminal exited normally (code 0) during health check.")
+                        else:
+                            logger.error(f"Windows Terminal process CRASHED (exit code: {exit_code})!")
+                            crash_events.append(
+                                {
+                                    "time": time.time(),
+                                    "pid": pid,
+                                    "exit_code": exit_code,
+                                    "last_action": "health_check",
+                                    "total_actions": total_actions,
+                                    **_capture_context(),
+                                }
+                            )
+                            if not auto_launch:
+                                break
+                        logger.info("Attempting to reconnect to Windows Terminal...")
+                        time.sleep(2)
+                        try:
+                            app, win, pid = connect_to_wt()
+                            watchdog = Watchdog(pid, memory_threshold_mb=memory_threshold_mb)
+                            watchdog.set_hwnd(win.handle)
+                            set_target_hwnd(win.handle, pid)
+                            if pid not in all_pids:
+                                all_pids.append(pid)
+                            logger.info(f"Reconnected to Windows Terminal (PID {pid})")
+                            continue
+                        except RuntimeError:
+                            if auto_launch:
+                                logger.info("Launching new Windows Terminal instance...")
+                                try:
+                                    app, win, pid = launch_wt(profile=wt_profile)
+                                    watchdog = Watchdog(pid, memory_threshold_mb=memory_threshold_mb)
+                                    watchdog.set_hwnd(win.handle)
+                                    set_target_hwnd(win.handle, pid)
+                                    if pid not in all_pids:
+                                        all_pids.append(pid)
+                                    logger.info(f"Launched and connected to Windows Terminal (PID {pid})")
+                                    continue
+                                except Exception:
+                                    logger.error("Failed to launch Windows Terminal. Stopping.")
+                                    break
+                            else:
+                                logger.error("No Windows Terminal instance found. Stopping.")
+                                break
+
+                    # Check if WT is responding
+                    snap = watchdog.take_snapshot()
+                    if not snap.is_responding:
+                        logger.error(
+                            f"Windows Terminal is NOT RESPONDING (hang detected)! "
+                            f"Actions so far: {total_actions}"
+                        )
+                        # Continue to log a few more attempts to confirm
+                        for i in range(3):
+                            time.sleep(2)
+                            snap = watchdog.take_snapshot()
+                            if snap.is_responding:
+                                logger.warning("Window recovered after hang.")
+                                break
+                        else:
+                            logger.error(
+                                "CONFIRMED HANG — Window did not recover after 3 retries."
+                            )
+                            # Capture crash dump before killing the hung process
+                            dump_path = watchdog.capture_dump(DUMP_DIR)
+                            if dump_path:
+                                logger.info(f"Hang dump saved: {dump_path}")
+                            else:
+                                logger.warning("Failed to capture hang dump")
+
+                            watchdog.kill_process()
+                            logger.info(f"Killed hung process PID {pid}")
+
+                            hang_events.append(
+                                {
+                                    "time": time.time(),
+                                    "pid": pid,
+                                    "last_action": recent_actions[-1] if recent_actions else None,
+                                    "total_actions": total_actions,
+                                    "dump_path": dump_path,
+                                    **_capture_context(),
+                                }
+                            )
+
+                            if not auto_launch:
+                                break
+
+                            # Try to reconnect or relaunch
+                            logger.info("Attempting to reconnect to Windows Terminal...")
+                            time.sleep(2)
+                            try:
+                                app, win, pid = connect_to_wt()
+                                watchdog = Watchdog(pid, memory_threshold_mb=memory_threshold_mb)
+                                watchdog.set_hwnd(win.handle)
+                                set_target_hwnd(win.handle, pid)
+                                if pid not in all_pids:
+                                    all_pids.append(pid)
+                                logger.info(f"Reconnected to Windows Terminal (PID {pid})")
+                            except RuntimeError:
+                                if auto_launch:
+                                    logger.info("Launching new Windows Terminal instance...")
+                                    try:
+                                        app, win, pid = launch_wt(profile=wt_profile)
+                                        watchdog = Watchdog(pid, memory_threshold_mb=memory_threshold_mb)
+                                        watchdog.set_hwnd(win.handle)
+                                        set_target_hwnd(win.handle, pid)
+                                        if pid not in all_pids:
+                                            all_pids.append(pid)
+                                        logger.info(f"Launched and connected to Windows Terminal (PID {pid})")
+                                    except Exception:
+                                        logger.error("Failed to launch Windows Terminal. Stopping.")
+                                        break
+                                else:
+                                    logger.error("No Windows Terminal instance found. Stopping.")
+                                    break
+
+                    # Log health
+                    is_leaking, growth = watchdog.check_memory_leak()
+                    logger.info(
+                        f"[HEALTH] actions={total_actions}, elapsed={elapsed:.0f}s, "
+                        f"RSS={snap.memory_rss_mb:.1f}MB (growth={growth:+.1f}MB), "
+                        f"CPU={snap.cpu_percent:.0f}%, responding={snap.is_responding}"
                     )
+                    if is_leaking:
+                        logger.warning(
+                            f"POSSIBLE MEMORY LEAK: RSS={snap.memory_rss_mb:.1f}MB "
+                            f"exceeds threshold of {watchdog.memory_threshold_mb}MB"
+                        )
 
-                # Reconnect window handle in case WT was restarted or tabs changed
-                try:
-                    win = app.top_window()
-                    watchdog.set_hwnd(win.handle)
-                    set_target_hwnd(win.handle, pid)
-                except Exception:
-                    pass
+                    # Reconnect window handle in case WT was restarted or tabs changed
+                    try:
+                        win = app.top_window()
+                        watchdog.set_hwnd(win.handle)
+                        set_target_hwnd(win.handle, pid)
+                    except Exception:
+                        pass
 
-            # Random delay between actions
-            time.sleep(random.uniform(0.01, 0.15))
+                # Random delay between actions
+                time.sleep(random.uniform(MIN_ACTION_DELAY, MAX_ACTION_DELAY))
 
-    except Exception as e:
-        logger.error(f"Unexpected error in monkey loop: {e}", exc_info=True)
+        except Exception as e:
+            logger.error(f"Unexpected error in monkey loop: {e}", exc_info=True)
 
-    # Final summary
-    duration = time.time() - start_time
-    summary = watchdog.get_summary()
-    summary["total_actions"] = total_actions
-    summary["action_counts"] = action_counts
-    summary["action_errors"] = action_errors
-    summary["action_profile"] = action_profile
-    summary["seed"] = seed
-    summary["all_pids"] = all_pids
-    summary["crash_events"] = crash_events
-    summary["hang_events"] = hang_events
-    summary["tag_counts"] = tag_counts
-    summary["total_crashes"] = len(crash_events)
+        # Final summary
+        duration = time.time() - start_time
+        summary = watchdog.get_summary()
+        summary["total_actions"] = total_actions
+        summary["action_counts"] = action_counts
+        summary["action_errors"] = action_errors
+        summary["action_profile"] = action_profile
+        summary["seed"] = seed
+        summary["all_pids"] = all_pids
+        summary["crash_events"] = crash_events
+        summary["hang_events"] = hang_events
+        summary["tag_counts"] = tag_counts
+        summary["total_crashes"] = len(crash_events)
 
-    logger.info("=" * 72)
-    logger.info("MONKEY TEST COMPLETE")
-    logger.info(f"Duration: {duration:.1f}s ({duration / 60:.1f}m)")
-    logger.info(f"Total actions: {total_actions}")
-    logger.info(f"Crash detected: {summary['crash_detected']}")
-    logger.info(f"Total crashes (with recovery): {len(crash_events)}")
-    logger.info(f"All PIDs observed: {all_pids}")
-    logger.info(f"Hang count: {summary['hang_count']}")
-    if tag_counts:
-        logger.info(
-            "Code-path coverage: "
-            + ", ".join(
-                f"{name}={count}" for name, count in sorted(tag_counts.items(), key=lambda x: -x[1])
+        logger.info("=" * 72)
+        logger.info("MONKEY TEST COMPLETE")
+        logger.info(f"Duration: {duration:.1f}s ({duration / 60:.1f}m)")
+        logger.info(f"Total actions: {total_actions}")
+        logger.info(f"Crash detected: {summary['crash_detected']}")
+        logger.info(f"Total crashes (with recovery): {len(crash_events)}")
+        logger.info(f"All PIDs observed: {all_pids}")
+        logger.info(f"Hang count: {summary['hang_count']}")
+        if tag_counts:
+            logger.info(
+                "Code-path coverage: "
+                + ", ".join(
+                    f"{name}={count}" for name, count in sorted(tag_counts.items(), key=lambda x: -x[1])
+                )
             )
-        )
-    logger.info(f"Memory: initial={summary['initial_rss_mb']}MB, peak={summary['peak_rss_mb']}MB, current={summary['current_rss_mb']}MB")
-    logger.info(f"Seed: {seed} (use --seed {seed} to reproduce)")
+        logger.info(f"Memory: initial={summary['initial_rss_mb']}MB, peak={summary['peak_rss_mb']}MB, current={summary['current_rss_mb']}MB")
+        logger.info(f"Seed: {seed} (use --seed {seed} to reproduce)")
 
-    if action_errors:
-        logger.info("Action errors:")
-        for name, count in sorted(action_errors.items(), key=lambda x: -x[1]):
+        if action_errors:
+            logger.info("Action errors:")
+            for name, count in sorted(action_errors.items(), key=lambda x: -x[1]):
+                logger.info(f"  {name}: {count}")
+
+        logger.info("Top actions:")
+        for name, count in sorted(action_counts.items(), key=lambda x: -x[1])[:10]:
             logger.info(f"  {name}: {count}")
 
-    logger.info("Top actions:")
-    for name, count in sorted(action_counts.items(), key=lambda x: -x[1])[:10]:
-        logger.info(f"  {name}: {count}")
+        # Write JSON summary
+        summary_file = LOG_DIR / f"summary_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
+        with open(summary_file, "w") as f:
+            json.dump(summary, f, indent=2)
+        logger.info(f"Summary written to {summary_file}")
 
-    # Write JSON summary
-    summary_file = LOG_DIR / f"summary_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
-    with open(summary_file, "w") as f:
-        json.dump(summary, f, indent=2)
-    logger.info(f"Summary written to {summary_file}")
+        return summary
 
-    return summary
+    finally:
+        # Cleanup focus protection
+        input_guard.stop()
+        logger.info("InputGuard stopped")
+        get_input_lock().close()
+        _restore_foreground_lock_timeout(old_fg_timeout)
+        logger.info(f"Restored ForegroundLockTimeout to {old_fg_timeout}ms")
 
 
 def main():
@@ -565,6 +626,12 @@ Examples:
         default=None,
         help=argparse.SUPPRESS,
     )
+    parser.add_argument(
+        "--multi-instance",
+        action="store_true",
+        default=False,
+        help=argparse.SUPPRESS,
+    )
 
     args = parser.parse_args()
 
@@ -587,6 +654,7 @@ Examples:
                 "--memory-threshold", str(args.memory_threshold),
                 "--instance-id", str(i),
                 "--action-profile", instance_profile,
+                "--multi-instance",
             ]
             if args.launch:
                 cmd.append("--launch")
@@ -616,6 +684,7 @@ Examples:
         memory_threshold_mb=args.memory_threshold,
         wt_profile=args.wt_profile,
         action_profile=args.action_profile,
+        multi_instance=args.multi_instance or args.instances > 1,
     )
 
     # Exit with error code if crash or hang was detected
