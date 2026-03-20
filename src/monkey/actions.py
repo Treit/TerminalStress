@@ -166,6 +166,30 @@ def _safe_send_keys(keys: str, **kwargs):
     _raw_send_keys(keys, **kwargs)
 
 
+def _paste_text(text: str):
+    """
+    Type text by copying to clipboard and pasting with Ctrl+Shift+V.
+    Much faster than send_keys character-by-character.
+    """
+    import subprocess
+    # Use clip.exe to set clipboard
+    proc = subprocess.Popen(
+        ["clip.exe"], stdin=subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    proc.communicate(input=text.encode("utf-16-le"))
+    _assert_target_focus_stable()
+    # Ctrl+Shift+V = WT paste
+    _raw_send_keys("^+v")
+
+
+def _paste_command(text: str):
+    """Clear line, paste a command via clipboard, then press Enter."""
+    _clear_input_line()
+    _paste_text(text)
+    time.sleep(0.02)
+    _raw_send_keys("{ENTER}")
+
+
 def _safe_click(coords):
     """Mouse click only if WT is focused."""
     _assert_target_focus_stable()
@@ -458,7 +482,6 @@ def type_enter(win):
 def type_command(win):
     """Type a harmless shell command and press Enter."""
     _ensure_focused(win)
-    _clear_input_line()
     commands = [
         "echo hello",
         "dir",
@@ -474,10 +497,8 @@ def type_command(win):
         "title MonkeyTest",
     ]
     cmd = random.choice(commands)
-    _safe_send_keys(cmd, pause=0.03)
+    _paste_command(cmd)
     _brief_sleep(50)
-    _safe_send_keys("{ENTER}")
-    _brief_sleep(100)
 
 
 def clear_buffer(win):
@@ -786,65 +807,56 @@ def _get_available_profiles() -> list[str]:
 
 
 def new_tab_profile(win):
-    """Open a new tab with a randomly selected WT profile via the command palette."""
+    """Open a new tab with a randomly selected WT profile via wt.exe CLI."""
     _ensure_focused(win)
     profiles = _get_available_profiles()
     profile = random.choice(profiles)
-    # Use command palette: "New tab: <profile>"
-    _safe_send_keys("^+p")
-    _brief_sleep(200)
-    search_term = f"New tab: {profile}"
-    _safe_send_keys(search_term, pause=0.02)
-    _brief_sleep(200)
-    _safe_send_keys("{ENTER}")
+    # wt.exe -w 0 new-tab -p "Profile Name" opens a tab in the current window
+    subprocess.Popen(
+        ["wt.exe", "-w", "0", "new-tab", "-p", profile],
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
     _set_current_shell(profile)
     logger.info(f"new_tab_profile: opened '{profile}' (shell={_current_shell})")
-    _brief_sleep(400)
+    _brief_sleep(150)
 
 
 def split_pane_right_profile(win):
-    """Split pane right with a randomly selected WT profile."""
+    """Split pane right with a randomly selected WT profile via wt.exe CLI."""
     _ensure_focused(win)
     profiles = _get_available_profiles()
     profile = random.choice(profiles)
-    _safe_send_keys("^+p")
-    _brief_sleep(200)
-    search_term = f"Split right: {profile}"
-    _safe_send_keys(search_term, pause=0.02)
-    _brief_sleep(200)
-    _safe_send_keys("{ENTER}")
+    subprocess.Popen(
+        ["wt.exe", "-w", "0", "split-pane", "-H", "-p", profile],
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
     _set_current_shell(profile)
     logger.info(f"split_pane_right_profile: opened '{profile}' (shell={_current_shell})")
-    _brief_sleep(300)
+    _brief_sleep(150)
 
 
 def split_pane_down_profile(win):
-    """Split pane down with a randomly selected WT profile."""
+    """Split pane down with a randomly selected WT profile via wt.exe CLI."""
     _ensure_focused(win)
     profiles = _get_available_profiles()
     profile = random.choice(profiles)
-    _safe_send_keys("^+p")
-    _brief_sleep(200)
-    search_term = f"Split down: {profile}"
-    _safe_send_keys(search_term, pause=0.02)
-    _brief_sleep(200)
-    _safe_send_keys("{ENTER}")
+    subprocess.Popen(
+        ["wt.exe", "-w", "0", "split-pane", "-V", "-p", profile],
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
     _set_current_shell(profile)
     logger.info(f"split_pane_down_profile: opened '{profile}' (shell={_current_shell})")
-    _brief_sleep(300)
+    _brief_sleep(150)
 
 
 def type_shell_command(win):
     """Type a shell-appropriate command based on the current pane's shell."""
     _ensure_focused(win)
-    _clear_input_line()
     commands = _SHELL_COMMANDS.get(_current_shell, _SHELL_COMMANDS["cmd"])
     cmd = random.choice(commands)
-    _safe_send_keys(cmd, pause=0.03)
-    _brief_sleep(50)
-    _safe_send_keys("{ENTER}")
+    _paste_command(cmd)
     logger.info(f"type_shell_command [{_current_shell}]: {cmd}")
-    _brief_sleep(100)
+    _brief_sleep(50)
 
 
 # Track the TerminalStress subprocess so we don't launch multiples
@@ -865,25 +877,19 @@ def run_terminal_stress(win):
     """
     Launch TerminalStress in the focused pane.
     Uses the pre-built exe if it exists under bin/, otherwise uses dotnet run.
-    Types the command into the current pane and presses Enter.
     """
     global _stress_proc
     _ensure_focused(win)
 
-    # Clear any partial input
-    _clear_input_line()
-
     exe = _find_stress_exe()
     if exe:
-        cmd = exe.replace("\\", "\\\\")
+        cmd = exe
     else:
         cmd = f"dotnet run --project {str(_STRESS_CSPROJ)}"
 
-    _safe_send_keys(cmd, pause=0.03)
-    _brief_sleep(50)
-    _safe_send_keys("{ENTER}")
+    _paste_command(cmd)
     logger.info(f"Launched TerminalStress via: {cmd}")
-    _brief_sleep(500)
+    _brief_sleep(150)
 
 
 def stop_terminal_stress(win):
@@ -926,15 +932,12 @@ def run_edit(win):
     if not exe:
         logger.debug("run_edit: edit.exe not found, skipping")
         return
-    _clear_input_line()
     targets = ["", ".", "$env:TEMP\\monkey_scratch.txt"]
     target = random.choice(targets)
     cmd = f"edit {target}".strip()
-    _safe_send_keys(cmd, pause=0.03)
-    _brief_sleep(50)
-    _safe_send_keys("{ENTER}")
+    _paste_command(cmd)
     logger.info(f"Launched edit.exe: {cmd}")
-    _brief_sleep(500)
+    _brief_sleep(150)
 
 
 def stress_edit(win):
