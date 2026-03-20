@@ -97,11 +97,6 @@ def _reclaim_focus(win) -> bool:
             user32.AllowSetForegroundWindow(ASFW_ANY)
         except Exception:
             pass
-        try:
-            user32.keybd_event(VK_MENU, 0, 0, 0)
-            user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
-        except Exception:
-            pass
 
         if fore_tid and fore_tid != our_tid:
             user32.AttachThreadInput(our_tid, fore_tid, True)
