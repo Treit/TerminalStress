@@ -445,6 +445,9 @@ def type_enter(win):
 def type_command(win):
     """Type a harmless shell command and press Enter."""
     _ensure_focused(win)
+    # Ctrl+C to discard any partial input, then fresh command
+    _safe_send_keys("^c")
+    _brief_sleep(50)
     commands = [
         "echo hello",
         "dir",
@@ -460,7 +463,9 @@ def type_command(win):
         "title MonkeyTest",
     ]
     cmd = random.choice(commands)
-    _safe_send_keys(cmd + "{ENTER}", pause=0.02)
+    _safe_send_keys(cmd, pause=0.03)
+    _brief_sleep(30)
+    _safe_send_keys("{ENTER}")
     _brief_sleep(100)
 
 
@@ -681,6 +686,11 @@ _SHELL_COMMANDS: dict[str, list[str]] = {
         "1..100 | ForEach-Object { Write-Host ('x' * (Get-Random -Max 120)) }",
         "cls",
         "Clear-Host",
+        "rg --stats -c 'class' C:\\Windows\\System32 2>$null | Select-Object -First 20",
+        "Get-ChildItem C:\\ -Recurse -Depth 3 -ErrorAction SilentlyContinue | Measure-Object",
+        "Get-ChildItem C:\\Windows\\System32\\*.dll | Sort-Object Length -Descending | Select-Object -First 20",
+        "Get-Content $env:windir\\System32\\drivers\\etc\\hosts",
+        "[System.IO.Directory]::GetFiles('C:\\Windows\\System32', '*.exe') | Select-Object -First 30",
     ],
     "cmd": [
         "dir /s /b C:\\Windows\\System32\\*.dll | findstr /c:terminal 2>nul",
@@ -699,6 +709,10 @@ _SHELL_COMMANDS: dict[str, list[str]] = {
         "type nul",
         "tree /f . | more",
         "systeminfo | findstr /c:OS",
+        "dir /s /b C:\\ 2>nul | findstr /i terminal",
+        "dir /s C:\\Windows\\System32\\*.exe 2>nul | more",
+        "findstr /s /i /c:\"error\" C:\\Windows\\Logs\\*.log 2>nul | more",
+        "wmic process list brief",
     ],
     "bash": [
         "ls -laR /tmp 2>/dev/null | head -50",
@@ -713,6 +727,9 @@ _SHELL_COMMANDS: dict[str, list[str]] = {
         "history | tail -10",
         "seq 1 100 | xargs -I{} echo line{}",
         "clear",
+        "find / -maxdepth 3 -name '*.exe' 2>/dev/null | head -20",
+        "ls -laR /mnt 2>/dev/null | head -100",
+        "cat /proc/version 2>/dev/null || echo not linux",
     ],
 }
 
@@ -809,9 +826,14 @@ def split_pane_down_profile(win):
 def type_shell_command(win):
     """Type a shell-appropriate command based on the current pane's shell."""
     _ensure_focused(win)
+    # Ctrl+C to discard any partial input
+    _safe_send_keys("^c")
+    _brief_sleep(50)
     commands = _SHELL_COMMANDS.get(_current_shell, _SHELL_COMMANDS["cmd"])
     cmd = random.choice(commands)
-    _safe_send_keys(cmd + "{ENTER}", pause=0.02)
+    _safe_send_keys(cmd, pause=0.03)
+    _brief_sleep(30)
+    _safe_send_keys("{ENTER}")
     logger.info(f"type_shell_command [{_current_shell}]: {cmd}")
     _brief_sleep(100)
 
@@ -891,16 +913,16 @@ def run_edit(win):
     if not exe:
         logger.debug("run_edit: edit.exe not found, skipping")
         return
-    safe_exe = exe.replace("\\", "\\\\")
-    # Open edit on a random temp file or just the current directory
-    targets = [
-        "",
-        ".",
-        "$env:TEMP\\monkey_scratch.txt" if _current_shell == "pwsh" else "%TEMP%\\monkey_scratch.txt",
-    ]
+    # Ctrl+C to clear any partial input
+    _safe_send_keys("^c")
+    _brief_sleep(50)
+    # Just use "edit" since it's on PATH, avoids backslash escaping issues
+    targets = ["", ".", "$env:TEMP\\monkey_scratch.txt"]
     target = random.choice(targets)
-    cmd = f"{safe_exe} {target}".strip()
-    _safe_send_keys(cmd + "{ENTER}", pause=0.02)
+    cmd = f"edit {target}".strip()
+    _safe_send_keys(cmd, pause=0.03)
+    _brief_sleep(30)
+    _safe_send_keys("{ENTER}")
     logger.info(f"Launched edit.exe: {cmd}")
     _brief_sleep(500)
 
@@ -976,8 +998,10 @@ def build_action_catalog(action_profile: str = "default") -> list[Action]:
         _profiled_action("resize_pane_down", 10, resize_pane_down, "layout", action_profile=action_profile),
 
         # Pane management
-        _profiled_action("split_pane_right", 12, split_pane_right, "layout", "navigation", action_profile=action_profile),
-        _profiled_action("split_pane_down", 12, split_pane_down, "layout", "navigation", action_profile=action_profile),
+        _profiled_action("split_pane_right", 6, split_pane_right, "layout", "navigation", action_profile=action_profile),
+        _profiled_action("split_pane_down", 6, split_pane_down, "layout", "navigation", action_profile=action_profile),
+        _profiled_action("split_pane_right_profile", 6, split_pane_right_profile, "layout", "navigation", action_profile=action_profile),
+        _profiled_action("split_pane_down_profile", 6, split_pane_down_profile, "layout", "navigation", action_profile=action_profile),
         _profiled_action("close_pane", 6, close_pane, "layout", "navigation", action_profile=action_profile),
 
         # Pane focus
@@ -987,15 +1011,17 @@ def build_action_catalog(action_profile: str = "default") -> list[Action]:
         _profiled_action("focus_pane_down", 4, focus_pane_down, "navigation", action_profile=action_profile),
 
         # Tab management
-        _profiled_action("new_tab", 3, new_tab, "navigation", "layout", action_profile=action_profile),
+        _profiled_action("new_tab", 2, new_tab, "navigation", "layout", action_profile=action_profile),
+        _profiled_action("new_tab_profile", 3, new_tab_profile, "navigation", "layout", action_profile=action_profile),
         _profiled_action("close_tab", 2, close_tab, "navigation", "layout", action_profile=action_profile),
         _profiled_action("next_tab", 3, next_tab, "navigation", action_profile=action_profile),
         _profiled_action("prev_tab", 3, prev_tab, "navigation", action_profile=action_profile),
 
         # Typing
-        _profiled_action("type_random_text", 5, type_random_text, "input", action_profile=action_profile),
-        _profiled_action("type_enter", 5, type_enter, "input", action_profile=action_profile),
-        _profiled_action("type_command", 4, type_command, "buffer", "input", action_profile=action_profile),
+        _profiled_action("type_random_text", 2, type_random_text, "input", action_profile=action_profile),
+        _profiled_action("type_enter", 3, type_enter, "input", action_profile=action_profile),
+        _profiled_action("type_command", 2, type_command, "buffer", "input", action_profile=action_profile),
+        _profiled_action("type_shell_command", 5, type_shell_command, "buffer", "input", action_profile=action_profile),
         _profiled_action("clear_buffer", 5, clear_buffer, "buffer", "input", action_profile=action_profile),
 
         # Scrolling
