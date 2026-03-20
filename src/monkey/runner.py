@@ -12,13 +12,14 @@ import random
 import signal
 import sys
 import time
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
 import psutil
 from pywinauto.application import Application
 
-from .actions import build_action_catalog, pick_action, FocusError, set_target_hwnd, FocusError
+from .actions import ACTION_PROFILES, FocusError, build_action_catalog, pick_action, set_target_hwnd
 from .watchdog import Watchdog, find_wt_process
 
 # Logging setup
@@ -27,7 +28,7 @@ LOG_DIR = Path(__file__).parent.parent / "monkey_logs"
 
 def setup_logging(log_dir: Path, instance_id: int | None = None) -> Path:
     log_dir.mkdir(exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     suffix = f"_inst{instance_id}" if instance_id is not None else ""
     log_file = log_dir / f"monkey_{timestamp}{suffix}.log"
 
@@ -98,6 +99,7 @@ def run_monkey(
     auto_launch: bool = False,
     memory_threshold_mb: float = 2048.0,
     wt_profile: str | None = None,
+    action_profile: str = "default",
 ):
     """
     Main monkey test loop.
@@ -109,6 +111,7 @@ def run_monkey(
         auto_launch: Whether to launch WT if not running.
         memory_threshold_mb: Memory threshold for leak warnings.
         wt_profile: WT profile to use when launching (e.g. "Command Prompt").
+        action_profile: Bias action selection toward specific WT subsystems.
     """
     logger = logging.getLogger("monkey")
 
@@ -135,6 +138,7 @@ def run_monkey(
     # Track all PIDs and crashes for post-run analysis
     all_pids = [pid]
     crash_events = []
+    hang_events = []
 
     # Initialize watchdog
     watchdog = Watchdog(pid, memory_threshold_mb=memory_threshold_mb)
@@ -149,18 +153,22 @@ def run_monkey(
     )
 
     # Build action catalog
-    catalog = build_action_catalog()
+    catalog = build_action_catalog(action_profile=action_profile)
     total_weight = sum(a.weight for a in catalog)
     logger.info(
-        f"Action catalog: {len(catalog)} actions, total weight={total_weight}"
+        f"Action catalog: {len(catalog)} actions, total weight={total_weight}, "
+        f"profile={action_profile}"
     )
 
     # Stats
     action_counts: dict[str, int] = {}
     action_errors: dict[str, int] = {}
+    tag_counts: dict[str, int] = {}
     total_actions = 0
     start_time = time.time()
     last_health_check = start_time
+    recent_actions: deque[str] = deque(maxlen=6)
+    recent_tags: deque[str] = deque(maxlen=12)
 
     # Graceful shutdown
     running = True
@@ -178,6 +186,17 @@ def run_monkey(
     )
     logger.info("=" * 72)
 
+    def _capture_context(current_action=None) -> dict:
+        actions = list(recent_actions)
+        tags = list(dict.fromkeys(recent_tags))
+        if current_action is not None:
+            actions = (actions + [current_action.name])[-6:]
+            tags = list(dict.fromkeys(tags + list(current_action.tags)))
+        return {
+            "recent_actions": actions,
+            "recent_tags": tags,
+        }
+
     try:
         while running:
             elapsed = time.time() - start_time
@@ -186,17 +205,29 @@ def run_monkey(
                 break
 
             # Pick and execute a random action
-            action = pick_action(catalog)
+            action = pick_action(
+                catalog,
+                recent_actions=tuple(recent_actions),
+                recent_tags=tuple(recent_tags),
+            )
             total_actions += 1
             action_counts[action.name] = action_counts.get(action.name, 0) + 1
 
             try:
                 logger.info(f"[{total_actions}] {action.name}")
                 action.func(win)
+                recent_actions.append(action.name)
+                for tag in action.tags:
+                    recent_tags.append(tag)
+                    tag_counts[tag] = tag_counts.get(tag, 0) + 1
             except FocusError:
                 logger.debug(f"[{total_actions}] {action.name} skipped (WT not focused)")
                 total_actions -= 1
-                action_counts[action.name] = action_counts.get(action.name, 0) - 1
+                remaining = action_counts.get(action.name, 0) - 1
+                if remaining > 0:
+                    action_counts[action.name] = remaining
+                else:
+                    action_counts.pop(action.name, None)
                 _brief_sleep_ms = random.uniform(0.05, 0.2)
                 time.sleep(_brief_sleep_ms)
                 continue
@@ -217,13 +248,16 @@ def run_monkey(
                             f"Windows Terminal process CRASHED (exit code: {exit_code})!"
                         )
                         watchdog.state.crash_detected = True
-                        crash_events.append({
-                            "time": time.time(),
-                            "pid": pid,
-                            "exit_code": exit_code,
-                            "last_action": action.name,
-                            "total_actions": total_actions,
-                        })
+                        crash_events.append(
+                            {
+                                "time": time.time(),
+                                "pid": pid,
+                                "exit_code": exit_code,
+                                "last_action": action.name,
+                                "total_actions": total_actions,
+                                **_capture_context(action),
+                            }
+                        )
                         if not auto_launch:
                             break
                     # Try to reconnect or relaunch
@@ -267,13 +301,16 @@ def run_monkey(
                         logger.warning("Windows Terminal exited normally (code 0) during health check.")
                     else:
                         logger.error(f"Windows Terminal process CRASHED (exit code: {exit_code})!")
-                        crash_events.append({
-                            "time": time.time(),
-                            "pid": pid,
-                            "exit_code": exit_code,
-                            "last_action": "health_check",
-                            "total_actions": total_actions,
-                        })
+                        crash_events.append(
+                            {
+                                "time": time.time(),
+                                "pid": pid,
+                                "exit_code": exit_code,
+                                "last_action": "health_check",
+                                "total_actions": total_actions,
+                                **_capture_context(),
+                            }
+                        )
                         if not auto_launch:
                             break
                     logger.info("Attempting to reconnect to Windows Terminal...")
@@ -324,6 +361,15 @@ def run_monkey(
                         logger.error(
                             "CONFIRMED HANG — Window did not recover after 3 retries."
                         )
+                        hang_events.append(
+                            {
+                                "time": time.time(),
+                                "pid": pid,
+                                "last_action": recent_actions[-1] if recent_actions else None,
+                                "total_actions": total_actions,
+                                **_capture_context(),
+                            }
+                        )
                         break
 
                 # Log health
@@ -359,9 +405,12 @@ def run_monkey(
     summary["total_actions"] = total_actions
     summary["action_counts"] = action_counts
     summary["action_errors"] = action_errors
+    summary["action_profile"] = action_profile
     summary["seed"] = seed
     summary["all_pids"] = all_pids
     summary["crash_events"] = crash_events
+    summary["hang_events"] = hang_events
+    summary["tag_counts"] = tag_counts
     summary["total_crashes"] = len(crash_events)
 
     logger.info("=" * 72)
@@ -372,6 +421,13 @@ def run_monkey(
     logger.info(f"Total crashes (with recovery): {len(crash_events)}")
     logger.info(f"All PIDs observed: {all_pids}")
     logger.info(f"Hang count: {summary['hang_count']}")
+    if tag_counts:
+        logger.info(
+            "Code-path coverage: "
+            + ", ".join(
+                f"{name}={count}" for name, count in sorted(tag_counts.items(), key=lambda x: -x[1])
+            )
+        )
     logger.info(f"Memory: initial={summary['initial_rss_mb']}MB, peak={summary['peak_rss_mb']}MB, current={summary['current_rss_mb']}MB")
     logger.info(f"Seed: {seed} (use --seed {seed} to reproduce)")
 
@@ -385,7 +441,7 @@ def run_monkey(
         logger.info(f"  {name}: {count}")
 
     # Write JSON summary
-    summary_file = LOG_DIR / f"summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    summary_file = LOG_DIR / f"summary_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
     with open(summary_file, "w") as f:
         json.dump(summary, f, indent=2)
     logger.info(f"Summary written to {summary_file}")
@@ -404,6 +460,7 @@ Examples:
   python -m monkey.runner --duration 0       # Run forever (Ctrl+C to stop)
   python -m monkey.runner --seed 12345       # Reproducible run
   python -m monkey.runner --launch           # Launch WT if not running
+  python -m monkey.runner --action-profile scroll-race
         """,
     )
     parser.add_argument(
@@ -442,6 +499,13 @@ Examples:
         help='WT profile to launch (e.g. "Command Prompt" to skip shell profile loading)',
     )
     parser.add_argument(
+        "--action-profile",
+        type=str,
+        choices=sorted(ACTION_PROFILES.keys()),
+        default="default",
+        help="Bias action selection toward a specific set of WT code paths",
+    )
+    parser.add_argument(
         "--instances",
         type=int,
         default=1,
@@ -474,6 +538,7 @@ Examples:
                 cmd.append("--launch")
             if args.wt_profile:
                 cmd += ["--wt-profile", args.wt_profile]
+            cmd += ["--action-profile", args.action_profile]
             print(f"Starting monkey instance {i+1}/{args.instances} (seed={instance_seed})")
             proc = sp.Popen(cmd, cwd=str(Path(__file__).parent.parent))
             procs.append(proc)
@@ -494,6 +559,7 @@ Examples:
         auto_launch=args.launch,
         memory_threshold_mb=args.memory_threshold,
         wt_profile=args.wt_profile,
+        action_profile=args.action_profile,
     )
 
     # Exit with error code if crash or hang was detected

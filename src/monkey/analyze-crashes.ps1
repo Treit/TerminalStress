@@ -170,6 +170,7 @@ Write-Host "━━━ 2. Monkey Test Summaries ━━━" -ForegroundColor Yello
 $summaryFiles = @()
 if (Test-Path $LogDir) {
     $summaryFiles = Get-ChildItem -Path $LogDir -Filter 'summary_*.json' -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTime -ge $Since.AddMinutes(-1) -and $_.LastWriteTime -le $Until.AddMinutes(1) } |
         Sort-Object LastWriteTime
 }
 
@@ -190,6 +191,11 @@ else {
             $s = Get-Content $sf.FullName -Raw | ConvertFrom-Json
             $sPid = [int]$s.pid
             $sSeed = $s.seed
+            $profile = if ($s.PSObject.Properties.Name -contains 'action_profile' -and $s.action_profile) {
+                $s.action_profile
+            } else {
+                'default'
+            }
 
             if (-not $monkeyPidMap.ContainsKey($sPid)) {
                 $monkeyPidMap[$sPid] = @()
@@ -209,9 +215,28 @@ else {
                 'HANG*' { 'Yellow' }
                 default { 'Green' }
             }
-            Write-Host "    PID=$sPid  seed=$sSeed  actions=$($s.total_actions)  " -NoNewline
+            Write-Host "    PID=$sPid  seed=$sSeed  profile=$profile  actions=$($s.total_actions)  " -NoNewline
             Write-Host "$status" -ForegroundColor $statusColor -NoNewline
             Write-Host "  mem=$($s.initial_rss_mb)→$($s.peak_rss_mb)MB  dur=$($s.duration_seconds)s"
+
+            $tagProps = @()
+            if ($s.PSObject.Properties.Name -contains 'tag_counts' -and $s.tag_counts) {
+                $tagProps = @($s.tag_counts.PSObject.Properties | Sort-Object { [int]$_.Value } -Descending | Select-Object -First 3)
+            }
+            if ($tagProps.Count -gt 0) {
+                $topTags = ($tagProps | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join ', '
+                Write-Host "      Top tags: $topTags" -ForegroundColor DarkGray
+            }
+
+            $lastCrash = @($s.crash_events) | Select-Object -Last 1
+            if ($lastCrash -and $lastCrash.recent_actions) {
+                Write-Host "      Last crash context: $(($lastCrash.recent_actions) -join ' -> ')" -ForegroundColor DarkYellow
+            }
+
+            $lastHang = @($s.hang_events) | Select-Object -Last 1
+            if ($lastHang -and $lastHang.recent_actions) {
+                Write-Host "      Last hang context:  $(($lastHang.recent_actions) -join ' -> ')" -ForegroundColor DarkYellow
+            }
         }
         catch {
             Write-Host "    [!] Failed to parse $($sf.Name): $_" -ForegroundColor Red
@@ -275,6 +300,7 @@ Write-Host "━━━ 4. Monkey Log Analysis ━━━" -ForegroundColor Yellow
 $logFiles = @()
 if (Test-Path $LogDir) {
     $logFiles = Get-ChildItem -Path $LogDir -Filter 'monkey_*.log' -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTime -ge $Since.AddMinutes(-1) -and $_.LastWriteTime -le $Until.AddMinutes(1) } |
         Sort-Object Name
 }
 
