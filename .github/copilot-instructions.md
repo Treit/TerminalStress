@@ -32,6 +32,7 @@ Passing any command-line argument switches the output encoding from UTF-8 to UTF
 - Use `uv` instead of `pip` for installing Python packages (e.g., `uv pip install` instead of `pip install`).
 - When creating or editing GitHub PRs with `gh` on PowerShell, always use `--body-file` instead of `--body` to avoid backtick escape corruption (PowerShell treats `` ` `` as an escape character, mangling markdown code spans).
 - Always launch the monkey stress tester via `src\monkey\run_monkey.cmd` (which opens a visible `conhost.exe` window), never inline in the current shell. Forward all arguments: `src\monkey\run_monkey.cmd --duration 600 --launch --action-profile buffer-chaos`.
+- Use `es` (Everything Search CLI) to find files on disk when you need to locate a file by name — it's instant and searches the entire filesystem. Example: `es WindowsTerminal.exe`, `es *.dmp`.
 
 ## GroupMe Notifications
 
