@@ -22,12 +22,14 @@
     .\repro.ps1
     .\repro.ps1 -Duration 60 -Instances 50
     .\repro.ps1 -Duration 30 -Instances 50 -NoAnalyze
+    .\repro.ps1 -Duration 300 -Instances 10 -ActionProfile buffer-chaos
 #>
 param(
     [int]$Duration = 30,
     [int]$Instances = 10,
     [int]$Seed = 666,
     [string]$WtProfile = "Command Prompt",
+    [string]$ActionProfile = "default",
     [switch]$NoAnalyze
 )
 
@@ -38,7 +40,7 @@ $monkeyDir = Join-Path $repoRoot 'src' 'monkey'
 $srcDir = Join-Path $repoRoot 'src'
 
 Write-Host "=== Windows Terminal Crash Repro ===" -ForegroundColor Cyan
-Write-Host "Duration: ${Duration}s, Instances: $Instances, Seed: $Seed"
+Write-Host "Duration: ${Duration}s, Instances: $Instances, Seed: $Seed, ActionProfile: $ActionProfile"
 Write-Host ""
 
 # Record start time for event log correlation
@@ -73,6 +75,9 @@ Write-Host "(This will take ~${Duration}s plus overhead)" -ForegroundColor DarkG
 $cmdArgs = "--duration $Duration --seed $Seed --launch --instances $Instances"
 if ($WtProfile) {
     $cmdArgs += " --wt-profile `"$WtProfile`""
+}
+if ($ActionProfile) {
+    $cmdArgs += " --action-profile $ActionProfile"
 }
 
 # Use venv python if available, otherwise system python

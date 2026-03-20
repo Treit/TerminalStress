@@ -7,14 +7,15 @@ Actions are weighted — higher weight means the action is selected more often.
 
 import ctypes
 import glob
+import logging
 import os
 import random
 import string
 import subprocess
 import time
-import logging
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, NamedTuple
+from typing import Callable
 
 import pywinauto
 from pywinauto.keyboard import send_keys as _raw_send_keys
@@ -53,23 +54,25 @@ def _safe_click(coords):
     """Mouse click only if WT is focused."""
     if not _is_wt_focused():
         raise FocusError("WT lost focus before mouse click")
-    _safe_click(coords=coords)
+    mouse.click(coords=coords)
 
 
 def _safe_mouse_press(coords):
     if not _is_wt_focused():
         raise FocusError("WT lost focus before mouse press")
-    _safe_mouse_press(coords=coords)
+    mouse.press(coords=coords)
 
 
 def _safe_mouse_move(coords):
     if not _is_wt_focused():
         raise FocusError("WT lost focus before mouse move")
-    _safe_mouse_move(coords=coords)
+    mouse.move(coords=coords)
 
 
 def _safe_mouse_release(coords):
-    _safe_mouse_release(coords=coords)
+    if not _is_wt_focused():
+        raise FocusError("WT lost focus before mouse release")
+    mouse.release(coords=coords)
 
 # Timing constants
 MIN_ACTION_DELAY = 0.01
@@ -84,6 +87,31 @@ def _brief_sleep(max_ms: int = 150):
 
 # Known-bug mitigations (overridden by known_bugs.json at catalog build time)
 _mitigations: dict[str, object] = {}
+
+
+ACTION_PROFILES: dict[str, dict[str, float]] = {
+    "default": {},
+    "all-surfaces": {
+        "buffer": 2.5,
+        "mouse": 2.0,
+        "render": 2.0,
+        "stress": 2.0,
+        "ui": 2.5,
+        "window": 2.0,
+    },
+    "buffer-chaos": {
+        "buffer": 4.0,
+        "layout": 1.5,
+        "scroll": 2.5,
+        "stress": 2.5,
+    },
+    "scroll-race": {
+        "buffer": 1.5,
+        "layout": 2.5,
+        "navigation": 2.0,
+        "scroll": 4.0,
+    },
+}
 
 
 def load_known_bugs() -> dict[str, object]:
@@ -112,15 +140,38 @@ def _get_resize_repeats() -> int:
     return random.randint(RESIZE_HOLD_REPEATS_MIN, min(RESIZE_HOLD_REPEATS_MAX, cap))
 
 
-class Action(NamedTuple):
+@dataclass(frozen=True)
+class Action:
     name: str
     weight: int
     func: Callable
+    tags: tuple[str, ...] = ()
 
 
 class FocusError(Exception):
     """Raised when WT is not the foreground window and we can't fix it."""
     pass
+
+
+def get_action_profiles() -> tuple[str, ...]:
+    """Return the available action profile names."""
+    return tuple(ACTION_PROFILES.keys())
+
+
+def _profiled_action(
+    name: str,
+    weight: int,
+    func: Callable,
+    *tags: str,
+    action_profile: str = "default",
+) -> Action:
+    """Create an action with profile-adjusted weight and code-path tags."""
+    profile_multipliers = ACTION_PROFILES.get(action_profile, {})
+    multiplier = 1.0
+    for tag in tags:
+        multiplier = max(multiplier, profile_multipliers.get(tag, 1.0))
+    adjusted_weight = max(1, int(round(weight * multiplier)))
+    return Action(name=name, weight=adjusted_weight, func=func, tags=tuple(tags))
 
 
 def _ensure_focused(win):
@@ -311,6 +362,13 @@ def type_command(win):
     cmd = random.choice(commands)
     _safe_send_keys(cmd + "{ENTER}", pause=0.02)
     _brief_sleep(100)
+
+
+def clear_buffer(win):
+    """Clear the terminal buffer via WT's shortcut (Ctrl+Shift+K)."""
+    _ensure_focused(win)
+    _safe_send_keys("^+k")
+    _brief_sleep(150)
 
 
 def scroll_up(win):
@@ -539,76 +597,97 @@ def stop_terminal_stress(win):
 # Build the action catalog with weights.
 # Higher weight = more likely to be selected.
 # Pane resize actions have the highest weight since that's where bugs tend to hide.
-def build_action_catalog() -> list[Action]:
+def build_action_catalog(action_profile: str = "default") -> list[Action]:
     global _mitigations
     _mitigations = load_known_bugs()
 
     return [
         # Pane resize (high weight — this is where bugs like #7416 and #19996 live)
-        Action("resize_pane_left", 15, resize_pane_left),
-        Action("resize_pane_right", 15, resize_pane_right),
-        Action("resize_pane_up", 10, resize_pane_up),
-        Action("resize_pane_down", 10, resize_pane_down),
+        _profiled_action("resize_pane_left", 15, resize_pane_left, "layout", action_profile=action_profile),
+        _profiled_action("resize_pane_right", 15, resize_pane_right, "layout", action_profile=action_profile),
+        _profiled_action("resize_pane_up", 10, resize_pane_up, "layout", action_profile=action_profile),
+        _profiled_action("resize_pane_down", 10, resize_pane_down, "layout", action_profile=action_profile),
 
         # Pane management
-        Action("split_pane_right", 12, split_pane_right),
-        Action("split_pane_down", 12, split_pane_down),
-        Action("close_pane", 6, close_pane),
+        _profiled_action("split_pane_right", 12, split_pane_right, "layout", "navigation", action_profile=action_profile),
+        _profiled_action("split_pane_down", 12, split_pane_down, "layout", "navigation", action_profile=action_profile),
+        _profiled_action("close_pane", 6, close_pane, "layout", "navigation", action_profile=action_profile),
 
         # Pane focus
-        Action("focus_pane_left", 8, focus_pane_left),
-        Action("focus_pane_right", 8, focus_pane_right),
-        Action("focus_pane_up", 4, focus_pane_up),
-        Action("focus_pane_down", 4, focus_pane_down),
+        _profiled_action("focus_pane_left", 8, focus_pane_left, "navigation", action_profile=action_profile),
+        _profiled_action("focus_pane_right", 8, focus_pane_right, "navigation", action_profile=action_profile),
+        _profiled_action("focus_pane_up", 4, focus_pane_up, "navigation", action_profile=action_profile),
+        _profiled_action("focus_pane_down", 4, focus_pane_down, "navigation", action_profile=action_profile),
 
         # Tab management
-        Action("new_tab", 3, new_tab),
-        Action("close_tab", 2, close_tab),
-        Action("next_tab", 3, next_tab),
-        Action("prev_tab", 3, prev_tab),
+        _profiled_action("new_tab", 3, new_tab, "navigation", "layout", action_profile=action_profile),
+        _profiled_action("close_tab", 2, close_tab, "navigation", "layout", action_profile=action_profile),
+        _profiled_action("next_tab", 3, next_tab, "navigation", action_profile=action_profile),
+        _profiled_action("prev_tab", 3, prev_tab, "navigation", action_profile=action_profile),
 
         # Typing
-        Action("type_random_text", 5, type_random_text),
-        Action("type_enter", 5, type_enter),
-        Action("type_command", 4, type_command),
+        _profiled_action("type_random_text", 5, type_random_text, "input", action_profile=action_profile),
+        _profiled_action("type_enter", 5, type_enter, "input", action_profile=action_profile),
+        _profiled_action("type_command", 4, type_command, "buffer", "input", action_profile=action_profile),
+        _profiled_action("clear_buffer", 5, clear_buffer, "buffer", "input", action_profile=action_profile),
 
         # Scrolling
-        Action("scroll_up", 4, scroll_up),
-        Action("scroll_down", 4, scroll_down),
+        _profiled_action("scroll_up", 4, scroll_up, "navigation", "scroll", action_profile=action_profile),
+        _profiled_action("scroll_down", 4, scroll_down, "navigation", "scroll", action_profile=action_profile),
 
         # Window management
-        Action("resize_window", 6, resize_window),
-        Action("maximize_window", 2, maximize_window),
-        Action("minimize_restore_window", 1, minimize_restore_window),
-        Action("toggle_fullscreen", 1, toggle_fullscreen),
+        _profiled_action("resize_window", 6, resize_window, "render", "window", action_profile=action_profile),
+        _profiled_action("maximize_window", 2, maximize_window, "window", action_profile=action_profile),
+        _profiled_action("minimize_restore_window", 1, minimize_restore_window, "window", action_profile=action_profile),
+        _profiled_action("toggle_fullscreen", 1, toggle_fullscreen, "render", "window", action_profile=action_profile),
 
         # Zoom
-        Action("zoom_in", 2, zoom_in),
-        Action("zoom_out", 2, zoom_out),
-        Action("zoom_reset", 2, zoom_reset),
+        _profiled_action("zoom_in", 2, zoom_in, "render", action_profile=action_profile),
+        _profiled_action("zoom_out", 2, zoom_out, "render", action_profile=action_profile),
+        _profiled_action("zoom_reset", 2, zoom_reset, "render", action_profile=action_profile),
 
         # Search & UI
-        Action("open_search", 2, open_search),
-        Action("open_command_palette", 1, open_command_palette),
-        Action("command_palette_search", 3, command_palette_search),
-        Action("open_settings", 1, open_settings),
+        _profiled_action("open_search", 2, open_search, "input", "ui", action_profile=action_profile),
+        _profiled_action("open_command_palette", 1, open_command_palette, "ui", action_profile=action_profile),
+        _profiled_action("command_palette_search", 3, command_palette_search, "input", "ui", action_profile=action_profile),
+        _profiled_action("open_settings", 1, open_settings, "render", "ui", action_profile=action_profile),
 
         # Mouse
-        Action("mouse_click_random", 4, mouse_click_random),
-        Action("mouse_drag_random", 2, mouse_drag_random),
+        _profiled_action("mouse_click_random", 4, mouse_click_random, "mouse", action_profile=action_profile),
+        _profiled_action("mouse_drag_random", 2, mouse_drag_random, "mouse", action_profile=action_profile),
 
         # Clipboard
-        Action("copy_paste", 2, copy_paste),
+        _profiled_action("copy_paste", 2, copy_paste, "buffer", "mouse", action_profile=action_profile),
 
         # TerminalStress
-        Action("run_terminal_stress", 2, run_terminal_stress),
-        Action("stop_terminal_stress", 1, stop_terminal_stress),
+        _profiled_action("run_terminal_stress", 2, run_terminal_stress, "input", "stress", action_profile=action_profile),
+        _profiled_action("stop_terminal_stress", 1, stop_terminal_stress, "input", "stress", action_profile=action_profile),
     ]
 
 
-def pick_action(catalog: list[Action]) -> Action:
-    """Select a random action from the catalog using weighted random selection."""
-    names = [a.name for a in catalog]
-    weights = [a.weight for a in catalog]
-    chosen = random.choices(catalog, weights=weights, k=1)[0]
-    return chosen
+def pick_action(
+    catalog: list[Action],
+    recent_actions: tuple[str, ...] | None = None,
+    recent_tags: tuple[str, ...] | None = None,
+) -> Action:
+    """Select a weighted-random action while nudging toward fresh code paths."""
+    recent_action_set = set(recent_actions or ())
+    recent_tag_set = set(recent_tags or ())
+    adjusted_weights: list[float] = []
+
+    for action in catalog:
+        weight = float(action.weight)
+
+        if action.name in recent_action_set:
+            weight *= 0.2
+
+        overlap = sum(1 for tag in action.tags if tag in recent_tag_set)
+        if recent_tag_set:
+            if overlap == 0:
+                weight *= 1.5
+            else:
+                weight /= 1.0 + (0.35 * overlap)
+
+        adjusted_weights.append(max(weight, 0.1))
+
+    return random.choices(catalog, weights=adjusted_weights, k=1)[0]
