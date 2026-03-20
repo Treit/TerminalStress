@@ -652,6 +652,170 @@ def command_palette_search(win):
     _brief_sleep(100)
 
 
+# ---------------------------------------------------------------------------
+# Shell-aware profiles and commands
+# ---------------------------------------------------------------------------
+
+# Profiles available for random tab/pane creation (subset of common shells)
+_WT_PROFILES = [
+    "Windows PowerShell",
+    "Command Prompt",
+    "PowerShell",
+    "Git Bash",
+]
+
+# Read-only, non-destructive commands per shell family
+_SHELL_COMMANDS: dict[str, list[str]] = {
+    "pwsh": [
+        "Get-ChildItem -Recurse -Depth 2 | Select-Object -First 50",
+        "Get-Process | Sort-Object WorkingSet64 -Descending | Select-Object -First 10",
+        "Get-Service | Where-Object Status -eq Running | Select-Object -First 20",
+        "Get-Date -Format o",
+        "$PSVersionTable",
+        "[System.Environment]::OSVersion",
+        "Get-History",
+        "Get-PSDrive",
+        "Get-Variable | Select-Object -First 30",
+        "Get-Module -ListAvailable | Select-Object -First 15",
+        "Get-EventLog -LogName Application -Newest 5 -ErrorAction SilentlyContinue",
+        "1..100 | ForEach-Object { Write-Host ('x' * (Get-Random -Max 120)) }",
+        "cls",
+        "Clear-Host",
+    ],
+    "cmd": [
+        "dir /s /b C:\\Windows\\System32\\*.dll | findstr /c:terminal 2>nul",
+        "dir",
+        "echo %TIME% %DATE%",
+        "hostname",
+        "ver",
+        "time /t",
+        "date /t",
+        "set",
+        "echo %RANDOM%%RANDOM%%RANDOM%",
+        "title MonkeyTest",
+        "color 0a",
+        "color 07",
+        "cls",
+        "type nul",
+        "tree /f . | more",
+        "systeminfo | findstr /c:OS",
+    ],
+    "bash": [
+        "ls -laR /tmp 2>/dev/null | head -50",
+        "find /tmp -maxdepth 2 2>/dev/null | head -30",
+        "echo $SHELL $BASH_VERSION",
+        "cat /dev/null",
+        "uname -a",
+        "env | head -20",
+        "ps aux | head -15",
+        "date",
+        "pwd",
+        "history | tail -10",
+        "seq 1 100 | xargs -I{} echo line{}",
+        "clear",
+    ],
+}
+
+# Map profile names to shell family
+_PROFILE_SHELL_MAP: dict[str, str] = {
+    "Windows PowerShell": "pwsh",
+    "PowerShell": "pwsh",
+    "Developer PowerShell for VS 2022": "pwsh",
+    "Developer PowerShell for VS 2022 (2)": "pwsh",
+    "Developer PowerShell for VS 18": "pwsh",
+    "Command Prompt": "cmd",
+    "Developer Command Prompt for VS 2022": "cmd",
+    "Developer Command Prompt for VS 2022 (2)": "cmd",
+    "Developer Command Prompt for VS 18": "cmd",
+    "Git Bash": "bash",
+}
+
+# Track which shell the most recent pane was opened with
+_current_shell: str = "cmd"
+
+
+def _set_current_shell(profile_name: str):
+    """Update tracked shell family based on the profile that was opened."""
+    global _current_shell
+    _current_shell = _PROFILE_SHELL_MAP.get(profile_name, "cmd")
+
+
+def _get_available_profiles() -> list[str]:
+    """Return profiles that actually exist on this system."""
+    try:
+        settings_path = Path(os.environ.get("LOCALAPPDATA", "")) / \
+            "Packages" / "Microsoft.WindowsTerminal_8wekyb3d8bbwe" / \
+            "LocalState" / "settings.json"
+        if settings_path.exists():
+            import json
+            with open(settings_path) as f:
+                data = json.load(f)
+            names = {p.get("name", "") for p in data.get("profiles", {}).get("list", [])}
+            return [p for p in _WT_PROFILES if p in names]
+    except Exception:
+        pass
+    return _WT_PROFILES
+
+
+def new_tab_profile(win):
+    """Open a new tab with a randomly selected WT profile via the command palette."""
+    _ensure_focused(win)
+    profiles = _get_available_profiles()
+    profile = random.choice(profiles)
+    # Use command palette: "New tab: <profile>"
+    _safe_send_keys("^+p")
+    _brief_sleep(200)
+    search_term = f"New tab: {profile}"
+    _safe_send_keys(search_term, pause=0.02)
+    _brief_sleep(200)
+    _safe_send_keys("{ENTER}")
+    _set_current_shell(profile)
+    logger.info(f"new_tab_profile: opened '{profile}' (shell={_current_shell})")
+    _brief_sleep(400)
+
+
+def split_pane_right_profile(win):
+    """Split pane right with a randomly selected WT profile."""
+    _ensure_focused(win)
+    profiles = _get_available_profiles()
+    profile = random.choice(profiles)
+    _safe_send_keys("^+p")
+    _brief_sleep(200)
+    search_term = f"Split right: {profile}"
+    _safe_send_keys(search_term, pause=0.02)
+    _brief_sleep(200)
+    _safe_send_keys("{ENTER}")
+    _set_current_shell(profile)
+    logger.info(f"split_pane_right_profile: opened '{profile}' (shell={_current_shell})")
+    _brief_sleep(300)
+
+
+def split_pane_down_profile(win):
+    """Split pane down with a randomly selected WT profile."""
+    _ensure_focused(win)
+    profiles = _get_available_profiles()
+    profile = random.choice(profiles)
+    _safe_send_keys("^+p")
+    _brief_sleep(200)
+    search_term = f"Split down: {profile}"
+    _safe_send_keys(search_term, pause=0.02)
+    _brief_sleep(200)
+    _safe_send_keys("{ENTER}")
+    _set_current_shell(profile)
+    logger.info(f"split_pane_down_profile: opened '{profile}' (shell={_current_shell})")
+    _brief_sleep(300)
+
+
+def type_shell_command(win):
+    """Type a shell-appropriate command based on the current pane's shell."""
+    _ensure_focused(win)
+    commands = _SHELL_COMMANDS.get(_current_shell, _SHELL_COMMANDS["cmd"])
+    cmd = random.choice(commands)
+    _safe_send_keys(cmd + "{ENTER}", pause=0.02)
+    logger.info(f"type_shell_command [{_current_shell}]: {cmd}")
+    _brief_sleep(100)
+
+
 # Track the TerminalStress subprocess so we don't launch multiples
 _stress_proc: subprocess.Popen | None = None
 
@@ -692,6 +856,109 @@ def stop_terminal_stress(win):
     _ensure_focused(win)
     _safe_send_keys("^c")
     _brief_sleep(200)
+
+
+# Microsoft Edit (edit.exe) — a TUI editor that stresses rendering
+_edit_exe: str | None = None
+
+
+def _find_edit_exe() -> str | None:
+    """Find Microsoft Edit (edit.exe) on the system, or None."""
+    global _edit_exe
+    if _edit_exe is not None:
+        return _edit_exe or None
+    import shutil
+    found = shutil.which("edit")
+    if found:
+        _edit_exe = found
+        return found
+    # Check WinGet install path
+    winget_path = Path(os.environ.get("LOCALAPPDATA", "")) / \
+        "Microsoft" / "WinGet" / "Packages"
+    if winget_path.exists():
+        matches = list(winget_path.rglob("edit.exe"))
+        if matches:
+            _edit_exe = str(matches[0])
+            return _edit_exe
+    _edit_exe = ""
+    return None
+
+
+def run_edit(win):
+    """Launch Microsoft Edit (edit.exe) in the focused pane to stress TUI rendering."""
+    _ensure_focused(win)
+    exe = _find_edit_exe()
+    if not exe:
+        logger.debug("run_edit: edit.exe not found, skipping")
+        return
+    safe_exe = exe.replace("\\", "\\\\")
+    # Open edit on a random temp file or just the current directory
+    targets = [
+        "",
+        ".",
+        "$env:TEMP\\monkey_scratch.txt" if _current_shell == "pwsh" else "%TEMP%\\monkey_scratch.txt",
+    ]
+    target = random.choice(targets)
+    cmd = f"{safe_exe} {target}".strip()
+    _safe_send_keys(cmd + "{ENTER}", pause=0.02)
+    logger.info(f"Launched edit.exe: {cmd}")
+    _brief_sleep(500)
+
+
+def stress_edit(win):
+    """
+    Send random keystrokes into a running edit.exe session — cursor movement,
+    typing, scrolling, search. Exercises TUI rendering paths in the terminal.
+    """
+    _ensure_focused(win)
+    actions = [
+        # Cursor movement
+        lambda: _safe_send_keys("{UP}" * random.randint(1, 20), pause=0.01),
+        lambda: _safe_send_keys("{DOWN}" * random.randint(1, 20), pause=0.01),
+        lambda: _safe_send_keys("{LEFT}" * random.randint(1, 10), pause=0.01),
+        lambda: _safe_send_keys("{RIGHT}" * random.randint(1, 10), pause=0.01),
+        lambda: _safe_send_keys("{PGUP}"),
+        lambda: _safe_send_keys("{PGDN}"),
+        lambda: _safe_send_keys("{HOME}"),
+        lambda: _safe_send_keys("{END}"),
+        lambda: _safe_send_keys("^{HOME}"),
+        lambda: _safe_send_keys("^{END}"),
+        # Type random text
+        lambda: _safe_send_keys(
+            "".join(random.choices(string.ascii_letters + string.digits + " ", k=random.randint(5, 40))),
+            pause=0.01,
+        ),
+        lambda: _safe_send_keys("{ENTER}"),
+        # Search (Ctrl+F in edit)
+        lambda: [
+            _safe_send_keys("^f"),
+            _brief_sleep(100),
+            _safe_send_keys("".join(random.choices(string.ascii_lowercase, k=3)), pause=0.02),
+            _brief_sleep(100),
+            _safe_send_keys("{ENTER}"),
+            _brief_sleep(50),
+            _safe_send_keys("{ESC}"),
+        ],
+        # Select text
+        lambda: _safe_send_keys("+{DOWN}" * random.randint(1, 5), pause=0.01),
+        lambda: _safe_send_keys("+{RIGHT}" * random.randint(1, 15), pause=0.01),
+    ]
+    action = random.choice(actions)
+    try:
+        result = action()
+    except Exception:
+        pass
+    _brief_sleep(30)
+
+
+def stop_edit(win):
+    """Exit edit.exe without saving (Ctrl+Q or Ctrl+C)."""
+    _ensure_focused(win)
+    _safe_send_keys("^q")
+    _brief_sleep(100)
+    # Dismiss any "save?" prompt
+    _safe_send_keys("n")
+    _brief_sleep(100)
 
 
 # Build the action catalog with weights.
@@ -762,6 +1029,11 @@ def build_action_catalog(action_profile: str = "default") -> list[Action]:
         # TerminalStress
         _profiled_action("run_terminal_stress", 2, run_terminal_stress, "input", "stress", action_profile=action_profile),
         _profiled_action("stop_terminal_stress", 1, stop_terminal_stress, "input", "stress", action_profile=action_profile),
+
+        # Microsoft Edit (TUI rendering stress)
+        _profiled_action("run_edit", 2, run_edit, "input", "render", "stress", action_profile=action_profile),
+        _profiled_action("stress_edit", 3, stress_edit, "input", "render", action_profile=action_profile),
+        _profiled_action("stop_edit", 1, stop_edit, "input", "stress", action_profile=action_profile),
     ]
 
 
