@@ -30,15 +30,18 @@ def _load_bot_id() -> str | None:
         return bot_id.strip()
 
     # Walk up from this file to find .env in the repo root
-    env_file = Path(__file__).resolve().parent.parent.parent / ".env"
-    if env_file.is_file():
-        for line in env_file.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line.startswith("#") or "=" not in line:
-                continue
-            key, _, value = line.partition("=")
-            if key.strip() == "GROUPME_BOT_ID":
-                return value.strip().strip("'\"")
+    try:
+        env_file = Path(__file__).resolve().parent.parent.parent / ".env"
+        if env_file.is_file():
+            for line in env_file.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                if key.strip() == "GROUPME_BOT_ID":
+                    return value.strip().strip("'\"")
+    except (OSError, UnicodeDecodeError):
+        pass
 
     return None
 
