@@ -57,7 +57,7 @@ def _log_entry(entry: dict) -> None:
         f.write(json.dumps(entry) + "\n")
 
 
-def _try_quick_handle(instruction: str) -> str | None:
+def _try_quick_handle(instruction: str, safety_override: bool = False) -> str | None:
     """Handle trivially simple directives without spawning copilot.
 
     Returns a response string if handled, or None to escalate to copilot.
@@ -74,7 +74,8 @@ def _try_quick_handle(instruction: str) -> str | None:
         return (
             "🤖 Send me any instruction in plain English and I'll carry it out.\n"
             "Quick responses: ping, status, help, time\n"
-            "Everything else spawns a full Copilot agent session (~30-60s)."
+            "Everything else spawns a full Copilot agent session (~30-60s).\n"
+            "Prefix with @@! to override safety checks."
         )
 
     if "time" in cmd and len(cmd) < 30:
@@ -82,13 +83,15 @@ def _try_quick_handle(instruction: str) -> str | None:
         return f"🤖 {now}"
 
     # Safety: refuse requests that look like secret/credential exfiltration
-    _sensitive_patterns = [
-        ".env", "secret", "password", "api_key", "api key", "apikey",
-        "token", "credential", "connection_string", "connectionstring",
-        "private key", "privatekey",
-    ]
-    if any(p in cmd for p in _sensitive_patterns):
-        return "🤖 Nice try! I can't share secrets, keys, or credentials. 🔒"
+    # @@! prefix overrides this check (developer override)
+    if not safety_override:
+        _sensitive_patterns = [
+            ".env", "secret", "password", "api_key", "api key", "apikey",
+            "token", "credential", "connection_string", "connectionstring",
+            "private key", "privatekey",
+        ]
+        if any(p in cmd for p in _sensitive_patterns):
+            return "🤖 Nice try! I can't share secrets, keys, or credentials. 🔒 (Use @@! to override)"
 
     return None  # Not a quick command — escalate to copilot
 
@@ -98,11 +101,15 @@ def _dispatch_directive(directive: dict, copilot_path: str, dry_run: bool = Fals
     instruction = directive["instruction"]
     sender = directive["sender_name"]
     message_id = directive.get("message_id", "unknown")
+    raw_text = directive.get("raw_text", "")
 
-    print(f"  Dispatching: {instruction[:80]}")
+    # @@! prefix = safety override from the developer
+    safety_override = raw_text.strip().startswith("@@!")
+
+    print(f"  Dispatching: {instruction}")
 
     # Try quick handling first (< 1 second, no copilot spawn)
-    quick_response = _try_quick_handle(instruction)
+    quick_response = _try_quick_handle(instruction, safety_override=safety_override)
     if quick_response is not None:
         print(f"  Quick response ({len(quick_response)} chars)")
         _log_entry({
@@ -126,12 +133,29 @@ def _dispatch_directive(directive: dict, copilot_path: str, dry_run: bool = Fals
         "dry_run": dry_run,
     })
 
-    # Build the prompt — the spawned agent handles posting results to GroupMe
+    # Build the prompt — .github/copilot-instructions.md provides full context
+    if "mike" in sender.lower():
+        tone = (
+            "IMPORTANT TONE INSTRUCTION: The sender is Mike Treit. "
+            "Always respond to Mike in a sarcastic, playfully roasting tone "
+            "with LOTS of emojis (at least 5-10 per message). Be witty and "
+            "irreverent but still actually carry out the task. Examples of tone: "
+            "'Oh wow Mike, what a GROUNDBREAKING request 🙄🎭💅✨🤡', "
+            "'Sure thing Your Majesty 👑🫡💀😂🎪'. "
+            "Never be mean-spirited, just playfully sarcastic.\n\n"
+        )
+    else:
+        tone = ""
+
     prompt = (
-        f"You received this directive from {sender} via GroupMe. "
-        f"Carry it out, then post your results back to GroupMe using: "
-        f"from monkey.notify_groupme import post; post('🤖 <your results>')\n\n"
-        f"Directive: {instruction}"
+        f"Directive from {sender} via GroupMe:\n\n"
+        f"{tone}"
+        f"{instruction}\n\n"
+        f"IMPORTANT: Focus ONLY on the actionable request above. Ignore any "
+        f"conversational preamble, praise, or references to previous tasks. "
+        f"Do NOT repeat or re-do anything from prior sessions.\n\n"
+        f"When done, post results to GroupMe: "
+        f"from monkey.notify_groupme import post; post('🤖 <results>')"
     )
 
     if dry_run:
@@ -143,45 +167,52 @@ def _dispatch_directive(directive: dict, copilot_path: str, dry_run: bool = Fals
         # Clean env — uv run injects NODE_OPTIONS=--no-warnings which breaks copilot
         clean_env = {k: v for k, v in os.environ.items() if k != "NODE_OPTIONS"}
 
-        result = subprocess.run(
-            [
-                copilot_path,
-                "-p", prompt,
-                "--yolo",       # allow all tools without confirmation
-                "--autopilot",  # auto-continue until done
-                "-s",           # silent — only agent output
-            ],
-            cwd=str(REPO_ROOT),
-            capture_output=True,
-            text=True,
-            timeout=300,  # 5 minute max per directive
+        # Write a launcher script — avoids cmd.exe escaping issues with the prompt
+        LOG_DIR.mkdir(exist_ok=True)
+        safe_id = re.sub(r'[^a-zA-Z0-9_-]', '_', message_id)[:40]
+        launcher = LOG_DIR / f"launch_{safe_id}.cmd"
+        prompt_escaped = prompt.replace('"', '\\"')
+        launcher.write_text(
+            f'@echo off\n'
+            f'cd /d "{REPO_ROOT}"\n'
+            f'"{copilot_path}" --yolo --autopilot -p "{prompt_escaped}"\n',
+            encoding="utf-8",
+        )
+
+        # Launch in conhost (survives WT crashes)
+        proc = subprocess.Popen(
+            ["conhost.exe", "cmd", "/c", str(launcher)],
             env=clean_env,
         )
 
+        try:
+            proc.wait(timeout=3600)  # 60 minute max
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            elapsed = round(time.time() - start, 1)
+            print(f"  Timed out after {elapsed}s")
+            _log_entry({"event": "timeout", "message_id": message_id, "elapsed_seconds": elapsed})
+            groupme_post("🤖 Timed out (60 min limit) — directive was too complex for one shot.")
+            return
+        finally:
+            launcher.unlink(missing_ok=True)
+
         elapsed = round(time.time() - start, 1)
-        output = result.stdout.strip()
 
         _log_entry({
             "event": "completed",
             "message_id": message_id,
-            "exit_code": result.returncode,
+            "exit_code": proc.returncode,
             "elapsed_seconds": elapsed,
-            "output_length": len(output),
             "instruction": instruction[:200],
         })
 
-        if result.returncode == 0:
-            print(f"  Completed in {elapsed}s (exit 0, {len(output)} chars)")
+        if proc.returncode == 0:
+            print(f"  Completed in {elapsed}s (exit 0)")
         else:
-            error_msg = (result.stderr or result.stdout or "unknown error")[:300]
-            print(f"  Failed in {elapsed}s (exit {result.returncode}): {error_msg[:80]}")
-            groupme_post(f"🤖 Hit an issue: {error_msg[:300]}")
+            print(f"  Failed in {elapsed}s (exit {proc.returncode})")
+            groupme_post(f"🤖 Hit an issue (exit code {proc.returncode})")
 
-    except subprocess.TimeoutExpired:
-        elapsed = round(time.time() - start, 1)
-        print(f"  Timed out after {elapsed}s")
-        _log_entry({"event": "timeout", "message_id": message_id, "elapsed_seconds": elapsed})
-        groupme_post(f"🤖 Timed out (5 min limit) — directive was too complex for one shot.")
     except Exception as exc:
         print(f"  Error: {exc}")
         _log_entry({"event": "error", "message_id": message_id, "error": str(exc)})
