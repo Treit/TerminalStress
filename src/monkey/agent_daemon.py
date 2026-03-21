@@ -5,7 +5,8 @@ in the Azure Storage Queue, this daemon:
 
   1. Launches `copilot -p "<directive>" --yolo --autopilot` in the repo
      directory so a full Copilot CLI agent carries out the work
-  2. The spawned agent posts results back to GroupMe itself
+  2. Reads the spawned agent's reply text from `src/monkey_logs/reply_*.txt`
+     and posts it to GroupMe
   3. Logs every dispatch to src/monkey_logs/daemon.jsonl for visibility
 
 Usage:
@@ -57,6 +58,23 @@ def _log_entry(entry: dict) -> None:
         f.write(json.dumps(entry) + "\n")
 
 
+def _powershell_literal(value: str) -> str:
+    """Return a single-quoted PowerShell literal."""
+    return value.replace("'", "''")
+
+
+def _consume_reply_file(reply_file: Path) -> str | None:
+    """Read and delete a reply file if present."""
+    if not reply_file.is_file():
+        return None
+
+    try:
+        text = reply_file.read_text(encoding="utf-8").strip()
+        return text or None
+    finally:
+        reply_file.unlink(missing_ok=True)
+
+
 def _try_quick_handle(instruction: str, safety_override: bool = False) -> str | None:
     """Handle trivially simple directives without spawning copilot.
 
@@ -102,6 +120,10 @@ def _dispatch_directive(directive: dict, copilot_path: str, dry_run: bool = Fals
     sender = directive["sender_name"]
     message_id = directive.get("message_id", "unknown")
     raw_text = directive.get("raw_text", "")
+    safe_id = re.sub(r'[^a-zA-Z0-9_-]', '_', message_id)[:40]
+    prompt_file = LOG_DIR / f"prompt_{safe_id}.txt"
+    reply_rel_path = f"src\\monkey_logs\\reply_{safe_id}.txt"
+    reply_file = LOG_DIR / f"reply_{safe_id}.txt"
 
     # @@! prefix = safety override from the developer
     safety_override = raw_text.strip().startswith("@@!")
@@ -154,8 +176,11 @@ def _dispatch_directive(directive: dict, copilot_path: str, dry_run: bool = Fals
         f"IMPORTANT: Focus ONLY on the actionable request above. Ignore any "
         f"conversational preamble, praise, or references to previous tasks. "
         f"Do NOT repeat or re-do anything from prior sessions.\n\n"
-        f"When done, post results to GroupMe: "
-        f"from monkey.notify_groupme import post; post('🤖 <results>')"
+        f"When done, write the final GroupMe reply text (plain text only, one "
+        f"message) to this UTF-8 file:\n"
+        f"{reply_rel_path}\n\n"
+        f"Do NOT post directly to GroupMe from the spawned session; the daemon "
+        f"will post exactly what you write in that file."
     )
 
     if dry_run:
@@ -167,21 +192,29 @@ def _dispatch_directive(directive: dict, copilot_path: str, dry_run: bool = Fals
         # Clean env — uv run injects NODE_OPTIONS=--no-warnings which breaks copilot
         clean_env = {k: v for k, v in os.environ.items() if k != "NODE_OPTIONS"}
 
-        # Write a launcher script — avoids cmd.exe escaping issues with the prompt
         LOG_DIR.mkdir(exist_ok=True)
-        safe_id = re.sub(r'[^a-zA-Z0-9_-]', '_', message_id)[:40]
-        launcher = LOG_DIR / f"launch_{safe_id}.cmd"
-        prompt_escaped = prompt.replace('"', '\\"')
-        launcher.write_text(
-            f'@echo off\n'
-            f'cd /d "{REPO_ROOT}"\n'
-            f'"{copilot_path}" --yolo --autopilot -p "{prompt_escaped}"\n',
-            encoding="utf-8",
+        prompt_file.write_text(prompt, encoding="utf-8")
+
+        # Read prompt text from disk to avoid shell escaping/expansion issues.
+        powershell_command = (
+            f"$p=Get-Content -LiteralPath '{_powershell_literal(str(prompt_file))}' "
+            f"-Raw -Encoding UTF8; "
+            f"Set-Location -LiteralPath '{_powershell_literal(str(REPO_ROOT))}'; "
+            f"& '{_powershell_literal(copilot_path)}' --yolo --autopilot -p $p"
         )
 
         # Launch in conhost (survives WT crashes)
         proc = subprocess.Popen(
-            ["conhost.exe", "cmd", "/c", str(launcher)],
+            [
+                "conhost.exe",
+                "powershell",
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                powershell_command,
+            ],
             env=clean_env,
         )
 
@@ -194,10 +227,9 @@ def _dispatch_directive(directive: dict, copilot_path: str, dry_run: bool = Fals
             _log_entry({"event": "timeout", "message_id": message_id, "elapsed_seconds": elapsed})
             groupme_post("🤖 Timed out (60 min limit) — directive was too complex for one shot.")
             return
-        finally:
-            launcher.unlink(missing_ok=True)
 
         elapsed = round(time.time() - start, 1)
+        reply_text = _consume_reply_file(reply_file)
 
         _log_entry({
             "event": "completed",
@@ -205,10 +237,27 @@ def _dispatch_directive(directive: dict, copilot_path: str, dry_run: bool = Fals
             "exit_code": proc.returncode,
             "elapsed_seconds": elapsed,
             "instruction": instruction[:200],
+            "reply_file": reply_rel_path,
+            "reply_chars": len(reply_text) if reply_text else 0,
         })
 
         if proc.returncode == 0:
             print(f"  Completed in {elapsed}s (exit 0)")
+            if reply_text:
+                ok = groupme_post(reply_text)
+                if ok:
+                    print(f"  Posted reply ({len(reply_text)} chars)")
+                    _log_entry({
+                        "event": "reply_posted",
+                        "message_id": message_id,
+                        "chars": len(reply_text),
+                    })
+                else:
+                    print("  warning: reply post failed")
+                    _log_entry({"event": "reply_post_failed", "message_id": message_id})
+            else:
+                groupme_post("🤖 Done — task completed.")
+                _log_entry({"event": "reply_missing", "message_id": message_id})
         else:
             print(f"  Failed in {elapsed}s (exit {proc.returncode})")
             groupme_post(f"🤖 Hit an issue (exit code {proc.returncode})")
@@ -217,6 +266,8 @@ def _dispatch_directive(directive: dict, copilot_path: str, dry_run: bool = Fals
         print(f"  Error: {exc}")
         _log_entry({"event": "error", "message_id": message_id, "error": str(exc)})
         groupme_post(f"🤖 Error: {exc}")
+    finally:
+        prompt_file.unlink(missing_ok=True)
 
 
 def main() -> None:

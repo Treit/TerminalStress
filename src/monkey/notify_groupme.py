@@ -9,7 +9,8 @@ Usage from Python:
     post("New crash found in Pane::_GetMinSize!")
 
 Usage from the command line:
-    python src/monkey/notify_groupme.py "Your message here"
+    # Prefer single quotes in PowerShell so $ doesn't get expanded
+    python src/monkey/notify_groupme.py 'Your message here'
 """
 from __future__ import annotations
 

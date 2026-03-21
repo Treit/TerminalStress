@@ -63,7 +63,7 @@ from monkey.notify_groupme import post
 post("🐛 New crash: Pane::_GetMinSize null deref during resize (PID 64572)")
 
 # From the command line
-python src/monkey/notify_groupme.py "🐛 New crash: TextBuffer::GetSize AV during SelectAll"
+python src/monkey/notify_groupme.py '🐛 New crash: TextBuffer::GetSize AV during SelectAll'
 ```
 
 **Setup:** The bot ID is read from the `GROUPME_BOT_ID` environment variable or a `.env` file in the repo root:
