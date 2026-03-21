@@ -9,4 +9,9 @@ REM   run_monkey.cmd --duration 0             -- run forever
 REM   run_monkey.cmd --seed 99               -- reproduce a specific run
 
 cd /d "%~dp0\.."
-start "MonkeyTester" conhost.exe cmd /k "cd /d %~dp0\.. && python -m monkey.runner %*"
+
+REM Use the Python 3.13 install that has all dependencies
+set PYTHON=C:\Users\randy\AppData\Local\Programs\Python\Python313\python.exe
+if not exist "%PYTHON%" set PYTHON=python
+
+start "MonkeyTester" conhost.exe cmd /k "cd /d %~dp0\.. && "%PYTHON%" -m monkey.runner %*"
