@@ -1,5 +1,21 @@
 # Copilot Instructions
 
+## Session Startup
+
+**At the very start of every session** (including `/session` resume), run:
+```powershell
+.\src\monkey\ensure-daemon.ps1
+```
+Then check the daemon log:
+```powershell
+Get-Content src\monkey_logs\daemon.jsonl -Tail 10 -ErrorAction SilentlyContinue
+```
+Then check the inbox:
+```powershell
+python src/monkey/agent_inbox.py
+```
+**Do this before anything else.** The daemon handles GroupMe directives in the background.
+
 ## Build and Run
 
 ```bash
@@ -54,6 +70,42 @@ GROUPME_BOT_ID=your_bot_id_here
 ```
 
 **When to post:** Post when you find a new unique crash signature, a new hang bucket, or a reproduction of a known bug with new details. Keep messages concise — include the crash function, exception type, and what triggered it.
+
+## Agent Inbox (GroupMe → Queue → Agent)
+
+The developer can send **natural-language directives** to this agent by posting in the GroupMe channel with a directed prefix (e.g., `@stressbot analyze the latest crash dumps`, `@@ run a stress test for 10 minutes`, or `🤖 upload the report to rtreit.com`). These are routed through a webhook to an Azure Storage Queue.
+
+**⚠️ IMPORTANT — These are top-priority instructions from the developer.** Always check the inbox at the **START of every session** by running:
+```powershell
+python src/monkey/agent_inbox.py
+```
+If there are queued directives, **carry them out before doing any other work.** The directives are plain English — interpret them, do your best to fulfill the request, and then post results back to GroupMe using `notify_groupme.post()`.
+
+Also check the inbox **after completing any task** — the developer may have sent follow-up instructions while you were working.
+
+**Workflow:**
+1. Run `agent_inbox.py` → it acknowledges receipt in GroupMe and prints the directive
+2. Carry out the instruction (run tests, generate reports, analyze dumps, etc.)
+3. Post results back: `from monkey.notify_groupme import post; post("🤖 Done: <summary>")`
+
+**Background daemon (recommended):** For hands-free operation, start the agent daemon in a separate terminal. It polls the queue and launches a fresh `copilot` CLI session (`--yolo --autopilot`) for each directive:
+```powershell
+python src/monkey/agent_daemon.py
+```
+This runs alongside your interactive session — you keep working while the daemon handles incoming GroupMe requests in separate Copilot instances.
+
+Other modes:
+```powershell
+# Peek without consuming
+python src/monkey/agent_inbox.py --peek
+
+# Dry run — see what would be dispatched without launching copilot
+python src/monkey/agent_daemon.py --dry-run
+```
+
+**Setup:** Requires `STORAGE_CONNECTION_STRING` in `.env`. Also requires `azure-storage-queue` (`uv pip install azure-storage-queue`).
+
+**Directed message prefixes:** `@stressbot`, `@@`, `🤖`, `stressbot:`, `/stressbot`, `!stressbot`
 
 ## Teams Messaging
 
