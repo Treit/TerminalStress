@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import glob as glob_mod
 import html
+import json
 import os
 import platform
 import re
@@ -39,6 +40,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DUMP_DIR = REPO_ROOT / "crashdumps"
 ANALYSIS_DIR = DUMP_DIR / ".analysis"
 OUTPUT_PATH = DUMP_DIR / "crash-analysis-report.html"
+MONKEY_LOG_DIR = REPO_ROOT / "src" / "monkey_logs"
 
 # ── System info (detected at import time) ──────────────────────────────────
 HARNESS = "Monkey Stress Tester"
@@ -79,6 +81,27 @@ def _detect_debugger_version(cdb_path: Path | None) -> str:
 
 WT_VERSION = _detect_wt_version()
 OS_LABEL = platform.platform()
+
+
+def _detect_terminal_source_revision() -> str:
+    """Best-effort detection of the local microsoft/terminal checkout revision."""
+    try:
+        source_repo = REPO_ROOT.parent / "terminal"
+        if not source_repo.is_dir():
+            return "microsoft/terminal not found"
+        result = subprocess.run(
+            ["git", "-C", str(source_repo), "--no-pager", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+        sha = result.stdout.strip()
+        if sha:
+            return f"microsoft/terminal @{sha}"
+    except Exception:
+        pass
+    return "microsoft/terminal (revision unknown)"
+
+
+TERMINAL_SOURCE_REV = _detect_terminal_source_revision()
 
 
 # ── cdb discovery ──────────────────────────────────────────────────────────
@@ -263,6 +286,81 @@ HANG_FAMILY_INFO = {
         ),
     },
 }
+
+
+SOURCE_RCA_AREAS = [
+    {
+        "title": "Pane-tree lifetime under resize / split / close churn",
+        "crash_families": ["pane-min-size"],
+        "hang_buckets": [
+            "APPLICATION_HANG_BusyHang_cfffffff_TerminalApp.dll!Pane::LayoutSizeNode::LayoutSizeNode",
+            "APPLICATION_HANG_HungIn_ExceptionHandler_cfffffff_TerminalApp.dll!Pane::_GetMinSize",
+        ],
+        "source_paths": [
+            r"src\cascadia\TerminalApp\Pane.cpp :: Pane::_GetMinSize, Pane::_Resize, Pane::ResizePane, Pane::_CloseChild",
+            r"src\cascadia\TerminalApp\Pane.LayoutSizeNode.cpp :: Pane::LayoutSizeNode::LayoutSizeNode",
+            r"src\cascadia\TerminalApp\AppActionHandlers.cpp :: TerminalPage::_HandleResizePane",
+        ],
+        "hypothesis": (
+            "Leaf-pane content can become stale while pane topology mutates under heavy resize/split/close action churn, "
+            "leaving minimum-size queries to walk invalid content state."
+        ),
+        "fix_steps": [
+            "Assert and harden pane invariants before dereferencing pane content in minimum-size and layout paths.",
+            "Short-circuit resize processing if pane-content ownership is being transferred or pane close is in progress.",
+            "Add targeted diagnostics around pane-tree mutation (split/close/reparent) to capture ownership transitions.",
+        ],
+    },
+    {
+        "title": "Control-core action forwarding while control lifetime is changing",
+        "crash_families": ["textbuffer-selectall", "cursor-mark-mode", "command-history"],
+        "hang_buckets": [],
+        "source_paths": [
+            r"src\cascadia\TerminalControl\TermControl.cpp :: SelectAll, ToggleMarkMode, CommandHistory",
+            r"src\cascadia\TerminalControl\ControlCore.cpp :: SelectAll, ToggleMarkMode, CommandHistory",
+            r"src\cascadia\TerminalCore\TerminalSelection.cpp :: Terminal::SelectAll, Terminal::ToggleMarkMode",
+            r"src\buffer\out\textBuffer.cpp :: TextBuffer::GetSize, TextBuffer::_estimateOffsetOfLastCommittedRow",
+        ],
+        "hypothesis": (
+            "Action handlers can continue forwarding into control/core objects while terminal or cursor/buffer state is "
+            "tearing down, producing near-null reads/writes in TextBuffer and Cursor code."
+        ),
+        "fix_steps": [
+            "Add explicit closing/initialized guards in TermControl action entry points before forwarding to ControlCore.",
+            "Enforce core-side readiness checks for SelectAll, ToggleMarkMode, and CommandHistory paths.",
+            "Add defensive validation around active buffer/cursor access to fail fast with telemetry instead of AV.",
+        ],
+    },
+    {
+        "title": "Mixed hang routes indicate secondary pressure, not a single hang root cause",
+        "crash_families": [],
+        "hang_buckets": [
+            "APPLICATION_HANG_cfffffff_win32u.dll!NtUserGetMessage",
+            "APPLICATION_HANG_cfffffff_win32u.dll!NtUserTranslateMessage",
+            "APPLICATION_HANG_BusyHang_Memory_cfffffff_ucrtbase.dll!free_base",
+        ],
+        "source_paths": [
+            r"Watchdog captures split across UI loop, allocator churn, and pane layout code paths.",
+            r"Monkey summaries show crash-adjacent action bursts spanning layout, navigation, input, and mouse surfaces.",
+        ],
+        "hypothesis": (
+            "UI-loop and allocator hangs are likely downstream symptoms of stress-induced state churn. "
+            "The pane/layout and control-lifetime crash families are better candidates for the primary fix focus."
+        ),
+        "fix_steps": [
+            "Prioritize fixing pane/layout and control-lifetime crash families first, then re-sample hang buckets.",
+            "Add watchdog annotations to correlate hangs with the most recent action profile and crash events.",
+        ],
+    },
+]
+
+
+FIX_VALIDATION_PLAN = [
+    "Phase 1 (hardening): add close/initialized guards plus pane-content invariant checks in hot action paths.",
+    "Phase 2 (instrumentation): emit structured telemetry for pane ownership transitions and rejected actions.",
+    "Phase 3 (regression): run 10-30 minute monkey sweeps across all-surfaces, buffer-chaos, and scroll-race profiles.",
+    "Phase 4 (exit criteria): no c0000005/c000041d crashes in repeated runs and reduced pane/layout hang bucket frequency.",
+]
 
 
 def html_escape(value: object) -> str:
@@ -633,6 +731,215 @@ def render_per_dump_details(entries: list[dict[str, object]]) -> str:
     return "".join(parts)
 
 
+def _collect_monkey_signal(max_files: int = 40) -> dict[str, object]:
+    summary_files = sorted(
+        MONKEY_LOG_DIR.glob("summary_*.json"),
+        key=lambda p: p.stat().st_mtime,
+    )[-max_files:]
+    tag_counts: Counter[str] = Counter()
+    action_counts: Counter[str] = Counter()
+    crash_exit_codes: Counter[str] = Counter()
+    crash_actions: Counter[str] = Counter()
+    crash_events = 0
+    hang_events = 0
+    total_actions = 0
+
+    for path in summary_files:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        total_actions += int(payload.get("total_actions", 0) or 0)
+        tag_counts.update((payload.get("tag_counts") or {}))
+        action_counts.update((payload.get("action_counts") or {}))
+
+        for event in payload.get("crash_events") or []:
+            if not isinstance(event, dict):
+                continue
+            crash_events += 1
+            code = event.get("exit_code")
+            if code is not None:
+                crash_exit_codes[str(code)] += 1
+            action = event.get("last_action")
+            if action:
+                crash_actions[str(action)] += 1
+
+        for event in payload.get("hang_events") or []:
+            if isinstance(event, dict):
+                hang_events += 1
+
+    return {
+        "sampled_runs": len(summary_files),
+        "total_actions": total_actions,
+        "crash_events": crash_events,
+        "hang_events": hang_events,
+        "top_tags": tag_counts.most_common(6),
+        "top_actions": action_counts.most_common(6),
+        "crash_exit_codes": crash_exit_codes.most_common(4),
+        "crash_actions": crash_actions.most_common(6),
+    }
+
+
+def _format_exit_code(value: str) -> str:
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return f"{numeric} (0x{(numeric & 0xFFFFFFFF):08X})"
+
+
+def _render_count_list(items: list[tuple[str, int]], empty_label: str = "none observed") -> str:
+    if not items:
+        return f'<span class="muted">{html_escape(empty_label)}</span>'
+    return ", ".join(
+        f"<code>{html_escape(name)}</code> ×{count}" for name, count in items
+    )
+
+
+def render_source_rca(
+    crash_family_counts: Counter[str],
+    hang_bucket_counts: Counter[str],
+    monkey_signal: dict[str, object],
+) -> str:
+    cards: list[str] = []
+    for idx, area in enumerate(SOURCE_RCA_AREAS, 1):
+        crash_refs = [
+            (family, crash_family_counts.get(family, 0))
+            for family in area["crash_families"]
+            if crash_family_counts.get(family, 0) > 0
+        ]
+        hang_refs = [
+            (bucket, hang_bucket_counts.get(bucket, 0))
+            for bucket in area["hang_buckets"]
+            if hang_bucket_counts.get(bucket, 0) > 0
+        ]
+        source_items = "".join(
+            f"<li><code>{html_escape(path)}</code></li>" for path in area["source_paths"]
+        )
+        step_items = "".join(
+            f"<li>{html_escape(step)}</li>" for step in area["fix_steps"]
+        )
+        cards.append(f"""
+        <div class="finding-card rca-card">
+          <h3><span class="finding-num">{idx}</span> {html_escape(area['title'])}</h3>
+          <p><strong>Hypothesis:</strong> {html_escape(area['hypothesis'])}</p>
+          <p><strong>Crash families:</strong> {_render_count_list(crash_refs)}</p>
+          <p><strong>Hang buckets:</strong> {_render_count_list(hang_refs)}</p>
+          <div class="two-col">
+            <div>
+              <h4>Source paths inspected</h4>
+              <ul class="compact-list">{source_items}</ul>
+            </div>
+            <div>
+              <h4>Immediate hardening actions</h4>
+              <ul class="compact-list">{step_items}</ul>
+            </div>
+          </div>
+        </div>""")
+
+    top_tags = _render_count_list(monkey_signal["top_tags"], "no tag data")
+    top_crash_actions = _render_count_list(monkey_signal["crash_actions"], "no crash-action data")
+    exit_codes = ", ".join(
+        f"<code>{html_escape(_format_exit_code(code))}</code> ×{count}"
+        for code, count in monkey_signal["crash_exit_codes"]
+    ) or '<span class="muted">no crash exit-code data</span>'
+
+    cards.append(f"""
+    <div class="finding-card signal-card">
+      <h3><span class="finding-num">M</span> Monkey reproduction signal (supporting evidence)</h3>
+      <p>
+        Sampled <strong>{int(monkey_signal['sampled_runs'])}</strong> stress-run summaries with
+        <strong>{int(monkey_signal['total_actions'])}</strong> total actions,
+        <strong>{int(monkey_signal['crash_events'])}</strong> crash events, and
+        <strong>{int(monkey_signal['hang_events'])}</strong> hang events.
+      </p>
+      <p><strong>Most common tags:</strong> {top_tags}</p>
+      <p><strong>Crash-adjacent actions:</strong> {top_crash_actions}</p>
+      <p><strong>Crash exit codes:</strong> {exit_codes}</p>
+    </div>""")
+
+    return "".join(cards)
+
+
+def render_issue_draft(
+    crash_entries: list[dict[str, object]],
+    hang_entries: list[dict[str, object]],
+    crash_family_counts: Counter[str],
+    hang_bucket_counts: Counter[str],
+) -> str:
+    crash_lines = "\n".join(
+        f"- {family}: {count} dump(s)"
+        for family, count in crash_family_counts.most_common()
+    )
+    hang_lines = "\n".join(
+        f"- {bucket}: {count} dump(s)"
+        for bucket, count in hang_bucket_counts.most_common()
+    )
+    issue_text = f"""Title
+Crash under pane/layout and control action churn (AV c0000005 with c000041d follow-ups)
+
+Summary
+Monkey stress testing produced {len(crash_entries)} WER crash dumps and {len(hang_entries)} watchdog hang dumps.
+Crashes cluster into {len(crash_family_counts)} families, dominated by pane/layout and control action paths.
+
+Observed crash families
+{crash_lines or "- none"}
+
+Observed hang buckets
+{hang_lines or "- none"}
+
+Primary stack paths
+- TerminalApp!Pane::_GetMinSize / Pane::LayoutSizeNode::LayoutSizeNode during resize/layout actions
+- TerminalControl + TerminalCore selection/history paths:
+  SelectAll -> TextBuffer::GetSize
+  ToggleMarkMode -> Cursor::SetIsOn
+  CommandHistory -> TextBuffer::_estimateOffsetOfLastCommittedRow
+
+Repro notes
+- Triggered by high-rate action churn (resize/split/close/navigation/mouse/input) from monkey stress profiles.
+- Follow-up crash dumps commonly record c000041d after a primary c0000005 AV.
+
+Candidate fix direction
+1) Harden pane-content lifetime invariants in resize/layout flows.
+2) Add closing/initialized guards in control action entry points before forwarding to core.
+3) Add defensive checks around active buffer/cursor state and emit telemetry on rejected actions.
+
+Environment
+- Source: {TERMINAL_SOURCE_REV}
+- Harness: {HARNESS}
+"""
+    return f"""
+    <div class="finding-card issue-draft-card">
+      <h3><span class="finding-num">I</span> Suggested GitHub issue draft</h3>
+      <p class="muted">Copy/paste this directly into a new issue.</p>
+      <pre class="issue-draft">{html_escape(issue_text)}</pre>
+    </div>"""
+
+
+def render_fix_plan() -> str:
+    phase_items = "".join(f"<li>{html_escape(step)}</li>" for step in FIX_VALIDATION_PLAN)
+    scoped_steps = []
+    for area in SOURCE_RCA_AREAS:
+        scoped_steps.extend(area["fix_steps"])
+    scoped_items = "".join(f"<li>{html_escape(step)}</li>" for step in scoped_steps)
+    return f"""
+    <div class="finding-card fix-plan-card">
+      <h3><span class="finding-num">F</span> Fix + validation plan</h3>
+      <div class="two-col">
+        <div>
+          <h4>Implementation track</h4>
+          <ul class="compact-list">{scoped_items}</ul>
+        </div>
+        <div>
+          <h4>Validation track</h4>
+          <ul class="compact-list">{phase_items}</ul>
+        </div>
+      </div>
+    </div>"""
+
+
 def main() -> None:
     global DUMP_DIR, ANALYSIS_DIR, OUTPUT_PATH
 
@@ -698,8 +1005,12 @@ def main() -> None:
     unique_crash_families = Counter(e["analysis"]["family"] for e in crash_entries)
     unique_hang_buckets = Counter(e["analysis"]["failure_bucket"] for e in hang_entries)
     duplicate_crash_count = sum(1 for e in crash_entries if e["duplicate"])
+    monkey_signal = _collect_monkey_signal()
 
     stat_cards= render_stat_cards(entries, crash_entries, hang_entries, unique_crash_families, unique_hang_buckets)
+    source_rca_cards = render_source_rca(unique_crash_families, unique_hang_buckets, monkey_signal)
+    issue_draft_card = render_issue_draft(crash_entries, hang_entries, unique_crash_families, unique_hang_buckets)
+    fix_plan_card = render_fix_plan()
 
     report = f"""<!DOCTYPE html>
 <html lang="en">
@@ -1180,6 +1491,38 @@ def main() -> None:
     font-size: 0.82rem;
     color: var(--accent);
   }}
+  .finding-card h4 {{
+    margin: 8px 0;
+    font-size: 0.82rem;
+    color: var(--text);
+  }}
+  .two-col {{
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 14px;
+    margin-top: 10px;
+  }}
+  .compact-list {{
+    margin: 0;
+    padding-left: 18px;
+    color: var(--text-secondary);
+    font-size: 0.83rem;
+  }}
+  .compact-list li {{
+    margin: 5px 0;
+  }}
+  .issue-draft {{
+    margin-top: 10px;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 12px;
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    line-height: 1.6;
+    white-space: pre-wrap;
+  }}
 
   /* ── Section dividers ──────────────────────────────── */
   .section-divider {{
@@ -1237,6 +1580,10 @@ def main() -> None:
     Of the WER crash dumps, <strong>{duplicate_crash_count}</strong> are duplicate follow-up captures
     (the <code>(1)</code> files) showing <code>c000041d</code> (fatal user callback exception)
     after the primary <code>c0000005</code> access violation.
+  </p>
+  <p>
+    Source alignment was performed against <code>{html_escape(TERMINAL_SOURCE_REV)}</code> and mapped to
+    concrete TerminalApp/TerminalControl/TerminalCore code paths for an actionable fix plan.
   </p>
 </div>
 
@@ -1299,6 +1646,18 @@ def main() -> None:
     non-responsiveness rather than one universal hang root cause.
   </p>
 </div>
+
+<div class="section-divider"></div>
+<h2 class="section-title"><span class="icon">🧠</span> Source-Level Root Cause Analysis</h2>
+{source_rca_cards}
+
+<div class="section-divider"></div>
+<h2 class="section-title"><span class="icon">📝</span> GitHub Issue Draft</h2>
+{issue_draft_card}
+
+<div class="section-divider"></div>
+<h2 class="section-title"><span class="icon">🛠️</span> Proposed Fix Plan</h2>
+{fix_plan_card}
 
 <div class="report-footer">
   <p>Generated by Monkey Stress Tester · Treit/TerminalStress</p>

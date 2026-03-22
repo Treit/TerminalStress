@@ -44,6 +44,17 @@ VK_RWIN = 0x5C
 VK_ESCAPE = 0x1B
 KEYEVENTF_KEYUP = 0x0002
 WM_KEYDOWN = 0x0100
+GA_ROOT = 2
+
+_WT_WINDOW_CLASS = "CASCADIA_HOSTING_WINDOW_CLASS"
+_BLOCKED_MOUSE_WINDOW_CLASSES = frozenset({
+    "ConsoleWindowClass",  # classic conhost.exe windows
+})
+
+user32.GetAncestor.argtypes = [ctypes.wintypes.HWND, ctypes.wintypes.UINT]
+user32.GetAncestor.restype = ctypes.wintypes.HWND
+user32.WindowFromPoint.argtypes = [ctypes.wintypes.POINT]
+user32.WindowFromPoint.restype = ctypes.wintypes.HWND
 
 # The WT window handle, set by the runner before actions execute
 _target_hwnd: int = 0
@@ -72,6 +83,32 @@ def _get_window_class(hwnd: int) -> str:
     buf = ctypes.create_unicode_buffer(256)
     user32.GetClassNameW(hwnd, buf, 256)
     return buf.value
+
+
+def _get_root_window(hwnd: int) -> int:
+    """Return the top-level ancestor window handle for *hwnd*."""
+    if not hwnd:
+        return 0
+    root = user32.GetAncestor(hwnd, GA_ROOT)
+    return int(root) if root else int(hwnd)
+
+
+def _is_windows_terminal_window(hwnd: int) -> bool:
+    """Return True when *hwnd* resolves to the target WT top-level window."""
+    root = _get_root_window(hwnd)
+    if not root:
+        return False
+
+    cls = _get_window_class(root)
+    if cls in _BLOCKED_MOUSE_WINDOW_CLASSES:
+        return False
+
+    root_pid = _get_window_pid(root)
+    if cls == _WT_WINDOW_CLASS:
+        return _target_pid == 0 or root_pid == _target_pid
+
+    # Fallback by PID so WT child-hosted surfaces still count as WT.
+    return _target_pid != 0 and root_pid == _target_pid
 
 
 def _flush_modifiers():
@@ -109,6 +146,41 @@ def _assert_target_focus_stable(samples: int = 1, delay_s: float = 0.01):
         time.sleep(delay_s)
 
 
+def _assert_mouse_target_is_wt(coords: tuple[int, int]) -> None:
+    """
+    Enforce WT-only mouse automation.
+
+    We explicitly block conhost-class windows so monkey never clicks inside
+    its own console host if WT loses focus.
+    """
+    fg_root = _get_root_window(user32.GetForegroundWindow())
+    fg_class = _get_window_class(fg_root)
+    if fg_class in _BLOCKED_MOUSE_WINDOW_CLASSES:
+        raise FocusError(
+            f"External foreground window ({fg_class}), refusing mouse action"
+        )
+    if not _is_windows_terminal_window(fg_root):
+        raise FocusError(
+            f"External foreground window ({fg_class or 'unknown'}), refusing mouse action"
+        )
+
+    point = ctypes.wintypes.POINT(coords[0], coords[1])
+    target_hwnd = int(user32.WindowFromPoint(point))
+    if not target_hwnd:
+        raise FocusError("Mouse target window is unknown, refusing mouse action")
+
+    target_root = _get_root_window(target_hwnd)
+    target_class = _get_window_class(target_root)
+    if target_class in _BLOCKED_MOUSE_WINDOW_CLASSES:
+        raise FocusError(
+            f"Mouse target window class is blocked ({target_class})"
+        )
+    if not _is_windows_terminal_window(target_root):
+        raise FocusError(
+            f"Mouse target is not Windows Terminal ({target_class or 'unknown'})"
+        )
+
+
 def _safe_send_keys(keys: str, **kwargs):
     """
     Wrapper around send_keys that:
@@ -132,6 +204,7 @@ def _safe_click(coords):
     lock = get_input_lock()
     with lock:
         _assert_target_focus_stable()
+        _assert_mouse_target_is_wt(coords)
         mouse.click(coords=coords)
 
 
@@ -139,6 +212,7 @@ def _safe_mouse_press(coords):
     lock = get_input_lock()
     with lock:
         _assert_target_focus_stable()
+        _assert_mouse_target_is_wt(coords)
         mouse.press(coords=coords)
 
 
@@ -153,6 +227,7 @@ def _safe_mouse_release(coords):
     lock = get_input_lock()
     with lock:
         _assert_target_focus_stable()
+        _assert_mouse_target_is_wt(coords)
         mouse.release(coords=coords)
 
 # Timing constants
@@ -313,7 +388,11 @@ def _ensure_focused(win):
 
     # Verify focus was actually acquired
     if not _is_target_foreground():
-        raise FocusError("WT is not the foreground window, skipping action")
+        fg = _get_root_window(user32.GetForegroundWindow())
+        cls = _get_window_class(fg)
+        raise FocusError(
+            f"External foreground window ({cls or 'unknown'}), skipping action"
+        )
 
 
 def split_pane_right(win):
