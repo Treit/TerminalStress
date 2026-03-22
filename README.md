@@ -82,3 +82,25 @@ The service redirects daemon stdout/stderr to `src/monkey_logs/`:
 - `service_stdout.log` — daemon stdout
 - `service_stderr.log` — daemon stderr
 - `daemon.jsonl` — structured daemon event log (written by the daemon itself)
+
+## Web Dashboard
+
+A real-time monitoring dashboard with live log streaming, charts, and status panels.
+
+```bash
+# Install dependencies (once)
+uv pip install fastapi uvicorn[standard] aiofiles
+
+# Launch the dashboard
+python src/dashboard/server.py
+```
+
+Open [http://localhost:8420](http://localhost:8420) in your browser.
+
+**Features:**
+- Live daemon log stream (Server-Sent Events) with color-coded event tags
+- Inbox directives table — sender, instruction, status, response time
+- Chart.js visualizations — action distribution, memory usage, crash timeline, directive response times
+- Crash dump inventory and campaign history
+- Stress test results table with leak detection
+- Auto-refreshes every 10 seconds
