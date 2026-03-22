@@ -96,7 +96,12 @@ def _try_quick_handle(instruction: str, safety_override: bool = False) -> str | 
             "Prefix with @@! to override safety checks."
         )
 
-    if "time" in cmd and len(cmd) < 30:
+    # Only match exact "time" queries, not "uptime", "runtime", etc.
+    _time_phrases = [
+        "what time is it", "what's the time", "current time",
+        "time now", "the time", "tell me the time",
+    ]
+    if any(cmd == p or cmd.startswith(p + "?") or cmd.endswith(p) for p in _time_phrases):
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S %Z").strip()
         return f"🤖 {now}"
 
@@ -156,31 +161,18 @@ def _dispatch_directive(directive: dict, copilot_path: str, dry_run: bool = Fals
     })
 
     # Build the prompt — .github/copilot-instructions.md provides full context
-    if "mike" in sender.lower():
-        tone = (
-            "IMPORTANT TONE INSTRUCTION: The sender is Mike Treit. "
-            "Always respond to Mike in a sarcastic, playfully roasting tone "
-            "with LOTS of emojis (at least 5-10 per message). Be witty and "
-            "irreverent but still actually carry out the task. Examples of tone: "
-            "'Oh wow Mike, what a GROUNDBREAKING request 🙄🎭💅✨🤡', "
-            "'Sure thing Your Majesty 👑🫡💀😂🎪'. "
-            "Never be mean-spirited, just playfully sarcastic.\n\n"
-        )
-    else:
-        tone = ""
-
     prompt = (
         f"Directive from {sender} via GroupMe:\n\n"
-        f"{tone}"
         f"{instruction}\n\n"
-        f"IMPORTANT: Focus ONLY on the actionable request above. Ignore any "
-        f"conversational preamble, praise, or references to previous tasks. "
-        f"Do NOT repeat or re-do anything from prior sessions.\n\n"
-        f"When done, write the final GroupMe reply text (plain text only, one "
-        f"message) to this UTF-8 file:\n"
+        f"CRITICAL INSTRUCTIONS:\n"
+        f"1. Carry out the request above. Run commands, look things up, do whatever is needed.\n"
+        f"2. You MUST write a useful, substantive answer to the file below.\n"
+        f"3. NEVER write just 'Done' or 'Task completed' — always include the actual result/data.\n"
+        f"4. If the request is unclear, make your best interpretation and answer that.\n"
+        f"5. Focus ONLY on the current request. Ignore references to prior conversations.\n\n"
+        f"Write your final reply (plain text, one message) to this UTF-8 file:\n"
         f"{reply_rel_path}\n\n"
-        f"Do NOT post directly to GroupMe from the spawned session; the daemon "
-        f"will post exactly what you write in that file."
+        f"Do NOT post directly to GroupMe; the daemon posts from this file."
     )
 
     if dry_run:
