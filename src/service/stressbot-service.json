@@ -1,0 +1,12 @@
+{
+  "pythonPath": ".venv\\Scripts\\python.exe",
+  "scriptPath": "src\\monkey\\agent_daemon.py",
+  "workingDirectory": "C:\\Users\\randy\\Git\\TerminalStress",
+  "arguments": "",
+  "restartOnCrash": true,
+  "restartDelaySeconds": 5,
+  "maxRestarts": 10,
+  "maxRestartWindowMinutes": 60,
+  "logDirectory": "src\\monkey_logs",
+  "enabled": true
+}
