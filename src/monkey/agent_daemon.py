@@ -5,7 +5,8 @@ in the Azure Storage Queue, this daemon:
 
   1. Launches `copilot -p "<directive>" --yolo --autopilot` in the repo
      directory so a full Copilot CLI agent carries out the work
-  2. The spawned agent posts results back to GroupMe itself
+  2. Reads the spawned agent's reply text from `src/monkey_logs/reply_*.txt`
+     and posts it to GroupMe
   3. Logs every dispatch to src/monkey_logs/daemon.jsonl for visibility
 
 Usage:
@@ -57,7 +58,24 @@ def _log_entry(entry: dict) -> None:
         f.write(json.dumps(entry) + "\n")
 
 
-def _try_quick_handle(instruction: str) -> str | None:
+def _powershell_literal(value: str) -> str:
+    """Return a single-quoted PowerShell literal."""
+    return value.replace("'", "''")
+
+
+def _consume_reply_file(reply_file: Path) -> str | None:
+    """Read and delete a reply file if present."""
+    if not reply_file.is_file():
+        return None
+
+    try:
+        text = reply_file.read_text(encoding="utf-8").strip()
+        return text or None
+    finally:
+        reply_file.unlink(missing_ok=True)
+
+
+def _try_quick_handle(instruction: str, safety_override: bool = False) -> str | None:
     """Handle trivially simple directives without spawning copilot.
 
     Returns a response string if handled, or None to escalate to copilot.
@@ -74,21 +92,29 @@ def _try_quick_handle(instruction: str) -> str | None:
         return (
             "🤖 Send me any instruction in plain English and I'll carry it out.\n"
             "Quick responses: ping, status, help, time\n"
-            "Everything else spawns a full Copilot agent session (~30-60s)."
+            "Everything else spawns a full Copilot agent session (~30-60s).\n"
+            "Prefix with @@! to override safety checks."
         )
 
-    if "time" in cmd and len(cmd) < 30:
+    # Only match exact "time" queries, not "uptime", "runtime", etc.
+    _time_phrases = [
+        "what time is it", "what's the time", "current time",
+        "time now", "the time", "tell me the time",
+    ]
+    if any(cmd == p or cmd.startswith(p + "?") or cmd.endswith(p) for p in _time_phrases):
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S %Z").strip()
         return f"🤖 {now}"
 
     # Safety: refuse requests that look like secret/credential exfiltration
-    _sensitive_patterns = [
-        ".env", "secret", "password", "api_key", "api key", "apikey",
-        "token", "credential", "connection_string", "connectionstring",
-        "private key", "privatekey",
-    ]
-    if any(p in cmd for p in _sensitive_patterns):
-        return "🤖 Nice try! I can't share secrets, keys, or credentials. 🔒"
+    # @@! prefix overrides this check (developer override)
+    if not safety_override:
+        _sensitive_patterns = [
+            ".env", "secret", "password", "api_key", "api key", "apikey",
+            "token", "credential", "connection_string", "connectionstring",
+            "private key", "privatekey",
+        ]
+        if any(p in cmd for p in _sensitive_patterns):
+            return "🤖 Nice try! I can't share secrets, keys, or credentials. 🔒 (Use @@! to override)"
 
     return None  # Not a quick command — escalate to copilot
 
@@ -98,11 +124,19 @@ def _dispatch_directive(directive: dict, copilot_path: str, dry_run: bool = Fals
     instruction = directive["instruction"]
     sender = directive["sender_name"]
     message_id = directive.get("message_id", "unknown")
+    raw_text = directive.get("raw_text", "")
+    safe_id = re.sub(r'[^a-zA-Z0-9_-]', '_', message_id)[:40]
+    prompt_file = LOG_DIR / f"prompt_{safe_id}.txt"
+    reply_rel_path = f"src\\monkey_logs\\reply_{safe_id}.txt"
+    reply_file = LOG_DIR / f"reply_{safe_id}.txt"
 
-    print(f"  Dispatching: {instruction[:80]}")
+    # @@! prefix = safety override from the developer
+    safety_override = raw_text.strip().startswith("@@!")
+
+    print(f"  Dispatching: {instruction}")
 
     # Try quick handling first (< 1 second, no copilot spawn)
-    quick_response = _try_quick_handle(instruction)
+    quick_response = _try_quick_handle(instruction, safety_override=safety_override)
     if quick_response is not None:
         print(f"  Quick response ({len(quick_response)} chars)")
         _log_entry({
@@ -126,12 +160,19 @@ def _dispatch_directive(directive: dict, copilot_path: str, dry_run: bool = Fals
         "dry_run": dry_run,
     })
 
-    # Build the prompt — the spawned agent handles posting results to GroupMe
+    # Build the prompt — .github/copilot-instructions.md provides full context
     prompt = (
-        f"You received this directive from {sender} via GroupMe. "
-        f"Carry it out, then post your results back to GroupMe using: "
-        f"from monkey.notify_groupme import post; post('🤖 <your results>')\n\n"
-        f"Directive: {instruction}"
+        f"Directive from {sender} via GroupMe:\n\n"
+        f"{instruction}\n\n"
+        f"CRITICAL INSTRUCTIONS:\n"
+        f"1. Carry out the request above. Run commands, look things up, do whatever is needed.\n"
+        f"2. You MUST write a useful, substantive answer to the file below.\n"
+        f"3. NEVER write just 'Done' or 'Task completed' — always include the actual result/data.\n"
+        f"4. If the request is unclear, make your best interpretation and answer that.\n"
+        f"5. Focus ONLY on the current request. Ignore references to prior conversations.\n\n"
+        f"Write your final reply (plain text, one message) to this UTF-8 file:\n"
+        f"{reply_rel_path}\n\n"
+        f"Do NOT post directly to GroupMe; the daemon posts from this file."
     )
 
     if dry_run:
@@ -143,49 +184,82 @@ def _dispatch_directive(directive: dict, copilot_path: str, dry_run: bool = Fals
         # Clean env — uv run injects NODE_OPTIONS=--no-warnings which breaks copilot
         clean_env = {k: v for k, v in os.environ.items() if k != "NODE_OPTIONS"}
 
-        result = subprocess.run(
+        LOG_DIR.mkdir(exist_ok=True)
+        prompt_file.write_text(prompt, encoding="utf-8")
+
+        # Read prompt text from disk to avoid shell escaping/expansion issues.
+        powershell_command = (
+            f"$p=Get-Content -LiteralPath '{_powershell_literal(str(prompt_file))}' "
+            f"-Raw -Encoding UTF8; "
+            f"Set-Location -LiteralPath '{_powershell_literal(str(REPO_ROOT))}'; "
+            f"& '{_powershell_literal(copilot_path)}' --yolo --autopilot -p $p"
+        )
+
+        # Launch in conhost (survives WT crashes)
+        proc = subprocess.Popen(
             [
-                copilot_path,
-                "-p", prompt,
-                "--yolo",       # allow all tools without confirmation
-                "--autopilot",  # auto-continue until done
-                "-s",           # silent — only agent output
+                "conhost.exe",
+                "powershell",
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                powershell_command,
             ],
-            cwd=str(REPO_ROOT),
-            capture_output=True,
-            text=True,
-            timeout=300,  # 5 minute max per directive
             env=clean_env,
         )
 
+        try:
+            proc.wait(timeout=3600)  # 60 minute max
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            elapsed = round(time.time() - start, 1)
+            print(f"  Timed out after {elapsed}s")
+            _log_entry({"event": "timeout", "message_id": message_id, "elapsed_seconds": elapsed})
+            groupme_post("🤖 Timed out (60 min limit) — directive was too complex for one shot.")
+            return
+
         elapsed = round(time.time() - start, 1)
-        output = result.stdout.strip()
+        reply_text = _consume_reply_file(reply_file)
 
         _log_entry({
             "event": "completed",
             "message_id": message_id,
-            "exit_code": result.returncode,
+            "exit_code": proc.returncode,
             "elapsed_seconds": elapsed,
-            "output_length": len(output),
             "instruction": instruction[:200],
+            "reply_file": reply_rel_path,
+            "reply_chars": len(reply_text) if reply_text else 0,
         })
 
-        if result.returncode == 0:
-            print(f"  Completed in {elapsed}s (exit 0, {len(output)} chars)")
+        if proc.returncode == 0:
+            print(f"  Completed in {elapsed}s (exit 0)")
+            if reply_text:
+                ok = groupme_post(reply_text)
+                if ok:
+                    print(f"  Posted reply ({len(reply_text)} chars)")
+                    _log_entry({
+                        "event": "reply_posted",
+                        "message_id": message_id,
+                        "chars": len(reply_text),
+                    })
+                else:
+                    print("  warning: reply post failed")
+                    _log_entry({"event": "reply_post_failed", "message_id": message_id})
+            else:
+                groupme_post("🤖 Done — task completed.")
+                _log_entry({"event": "reply_missing", "message_id": message_id})
         else:
-            error_msg = (result.stderr or result.stdout or "unknown error")[:300]
-            print(f"  Failed in {elapsed}s (exit {result.returncode}): {error_msg[:80]}")
-            groupme_post(f"🤖 Hit an issue: {error_msg[:300]}")
+            print(f"  Failed in {elapsed}s (exit {proc.returncode})")
+            groupme_post(f"🤖 Hit an issue (exit code {proc.returncode})")
 
-    except subprocess.TimeoutExpired:
-        elapsed = round(time.time() - start, 1)
-        print(f"  Timed out after {elapsed}s")
-        _log_entry({"event": "timeout", "message_id": message_id, "elapsed_seconds": elapsed})
-        groupme_post(f"🤖 Timed out (5 min limit) — directive was too complex for one shot.")
     except Exception as exc:
         print(f"  Error: {exc}")
         _log_entry({"event": "error", "message_id": message_id, "error": str(exc)})
         groupme_post(f"🤖 Error: {exc}")
+    finally:
+        prompt_file.unlink(missing_ok=True)
 
 
 def main() -> None:

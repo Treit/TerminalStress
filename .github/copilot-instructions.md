@@ -14,7 +14,10 @@ Then check the inbox:
 ```powershell
 python src/monkey/agent_inbox.py
 ```
-**Do this before anything else.** The daemon handles GroupMe directives in the background.
+**Do this before anything else.** The daemon handles GroupMe directives in the background by spawning separate Copilot CLI sessions, so your interactive session stays responsive.
+
+After running the startup script, check the daemon log for any recent
+background activity:
 
 ## Build and Run
 
@@ -42,7 +45,7 @@ Passing any command-line argument switches the output encoding from UTF-8 to UTF
 
 ## Conventions
 
-- Target framework is .NET 7.0 (`net7.0`).
+- Target framework is .NET 8.0 (`net8.0`).
 - `#pragma warning disable SYSLIB0001` is used intentionally to allow UTF-7 encoding for stress testing purposes.
 - The solution file lives inside `src/` alongside the project and source files.
 - Use `uv` instead of `pip` for installing Python packages (e.g., `uv pip install` instead of `pip install`).
@@ -60,7 +63,7 @@ from monkey.notify_groupme import post
 post("🐛 New crash: Pane::_GetMinSize null deref during resize (PID 64572)")
 
 # From the command line
-python src/monkey/notify_groupme.py "🐛 New crash: TextBuffer::GetSize AV during SelectAll"
+python src/monkey/notify_groupme.py '🐛 New crash: TextBuffer::GetSize AV during SelectAll'
 ```
 
 **Setup:** The bot ID is read from the `GROUPME_BOT_ID` environment variable or a `.env` file in the repo root:

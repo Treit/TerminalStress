@@ -136,7 +136,7 @@ def _validate_message(msg: dict, agent_name: str) -> str | None:
 
 def _extract_instruction(text: str) -> str:
     """Strip directive prefixes from the message text."""
-    prefixes = ["@@", "🤖", "@stressbot", "stressbot:", "/stressbot", "!stressbot"]
+    prefixes = ["@@!", "@@", "🤖", "@stressbot", "stressbot:", "/stressbot", "!stressbot"]
     stripped = text.strip()
     for prefix in prefixes:
         if stripped.lower().startswith(prefix.lower()):
@@ -211,7 +211,7 @@ def process_one(config: dict) -> dict | None:
         text = parsed.get("message", {}).get("text", "")
         instruction = _extract_instruction(text)
 
-        print(f"  [{sender_name}] {instruction[:80]}")
+        print(f"  [{sender_name}] {instruction}")
 
         # Brief ack so the sender knows it was received
         groupme_post("🫡")
@@ -223,6 +223,7 @@ def process_one(config: dict) -> dict | None:
             "instruction": instruction,
             "sender_name": sender_name,
             "message_id": message_id,
+            "raw_text": text,
         }
 
     return None  # Queue empty
@@ -252,10 +253,6 @@ def poll_loop(config: dict, interval: float = 10.0) -> None:
             directives = get_all_directives(config)
             if directives:
                 print(f"  processed {len(directives)} directive(s)")
-                for d in directives:
-                    groupme_post(
-                        "🤖 Noted — will need an interactive session to carry this out."
-                    )
             time.sleep(interval)
     except KeyboardInterrupt:
         print("\nStopped.")
@@ -308,13 +305,6 @@ def main() -> None:
             print(f"Received {len(directives)} directive(s):")
             for d in directives:
                 print(f"  [{d['sender_name']}] {d['instruction']}")
-            # When run standalone (not by an interactive agent), post
-            # a note that these need an agent session to carry out.
-            for d in directives:
-                groupme_post(
-                    "🤖 Got it — this needs an interactive agent session to carry out. "
-                    "Will handle it next time one starts up."
-                )
 
 
 if __name__ == "__main__":
