@@ -105,6 +105,9 @@ public class DaemonWorker : BackgroundService
         // The service runs as SYSTEM — set user-profile env vars so copilot auth works.
         SetUserProfileVars(psi);
 
+        // Ensure Python output is unbuffered so service logs flush promptly.
+        psi.Environment["PYTHONUNBUFFERED"] = "1";
+
         _logger.LogInformation("Launching: {Exe} {Args}", psi.FileName, psi.Arguments);
 
         _daemonProcess = Process.Start(psi)
