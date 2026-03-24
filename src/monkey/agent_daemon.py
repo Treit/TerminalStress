@@ -22,6 +22,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
 import re
@@ -46,8 +47,50 @@ LOG_FILE = LOG_DIR / "daemon.jsonl"
 
 
 def _find_copilot() -> str | None:
-    """Find the copilot CLI executable."""
-    return shutil.which("copilot")
+    """Find the GitHub Copilot CLI executable.
+
+    Prefers the WinGet-installed binary over the Microsoft Copilot UWP app
+    (which lives in WindowsApps and is NOT the CLI). Falls back to PATH.
+    """
+    # Prefer the known WinGet install location
+    winget_copilot = Path(
+        os.environ.get("LOCALAPPDATA", ""),
+        "Microsoft", "WinGet", "Links", "copilot.exe",
+    )
+    if winget_copilot.is_file():
+        return str(winget_copilot)
+
+    # Fallback: search PATH, but skip the WindowsApps Microsoft Copilot stub
+    found = shutil.which("copilot")
+    if found and "WindowsApps" not in found:
+        return found
+
+    # Last resort: check the WinGet packages dir directly
+    winget_pkg = Path(
+        os.environ.get("LOCALAPPDATA", ""),
+        "Microsoft", "WinGet", "Packages",
+    )
+    if winget_pkg.is_dir():
+        for candidate in winget_pkg.glob("GitHub.Copilot_*/copilot.exe"):
+            return str(candidate)
+
+    return found  # May be None or the WindowsApps stub
+
+
+def _is_session_zero() -> bool:
+    """Return True if running in Session 0 (Windows service context).
+
+    In Session 0, conhost.exe cannot create interactive console windows and
+    exits immediately — so we must launch powershell/copilot directly.
+    """
+    try:
+        pid = ctypes.windll.kernel32.GetCurrentProcessId()
+        session_id = ctypes.c_ulong()
+        if ctypes.windll.kernel32.ProcessIdToSessionId(pid, ctypes.byref(session_id)):
+            return session_id.value == 0
+    except (AttributeError, OSError):
+        pass
+    return False
 
 
 def _log_entry(entry: dict) -> None:
@@ -195,20 +238,46 @@ def _dispatch_directive(directive: dict, copilot_path: str, dry_run: bool = Fals
             f"& '{_powershell_literal(copilot_path)}' --yolo --autopilot -p $p"
         )
 
-        # Launch in conhost (survives WT crashes)
-        proc = subprocess.Popen(
-            [
-                "conhost.exe",
-                "powershell",
-                "-NoLogo",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                powershell_command,
-            ],
-            env=clean_env,
-        )
+        # Launch copilot. In Session 0 (service context), conhost.exe can't
+        # create interactive windows and exits immediately, so run directly.
+        in_session_zero = _is_session_zero()
+
+        if in_session_zero:
+            # Direct launch — no conhost wrapper
+            # Capture stderr for diagnostics, discard stdout
+            stderr_path = LOG_DIR / f"copilot_stderr_{safe_id}.log"
+            stderr_file = open(stderr_path, "w", encoding="utf-8")
+            proc = subprocess.Popen(
+                [
+                    "powershell",
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    powershell_command,
+                ],
+                env=clean_env,
+                stdout=subprocess.DEVNULL,
+                stderr=stderr_file,
+                stdin=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        else:
+            # Interactive launch — conhost wrapper (survives WT crashes)
+            proc = subprocess.Popen(
+                [
+                    "conhost.exe",
+                    "powershell",
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    powershell_command,
+                ],
+                env=clean_env,
+            )
 
         try:
             proc.wait(timeout=3600)  # 60 minute max
@@ -260,6 +329,12 @@ def _dispatch_directive(directive: dict, copilot_path: str, dry_run: bool = Fals
         groupme_post(f"🤖 Error: {exc}")
     finally:
         prompt_file.unlink(missing_ok=True)
+        # Close stderr capture file if it was opened
+        if in_session_zero and 'stderr_file' in dir():
+            try:
+                stderr_file.close()
+            except Exception:
+                pass
 
 
 def main() -> None:
@@ -283,6 +358,7 @@ def main() -> None:
         sys.exit(1)
 
     config = _get_config()
+    session_zero = _is_session_zero()
     print(f"Agent daemon started")
     print(f"  Agent: {config['agent_name']}")
     print(f"  Queue: {config['queue_name']}")
@@ -290,9 +366,17 @@ def main() -> None:
     print(f"  Copilot: {copilot_path or '(dry-run)'}")
     print(f"  Interval: {args.interval}s")
     print(f"  Repo: {REPO_ROOT}")
+    print(f"  Session 0: {session_zero}")
+    if session_zero:
+        print(f"  Mode: headless (service) — conhost disabled")
     print()
 
-    _log_entry({"event": "daemon_start", "agent": config["agent_name"], "interval": args.interval})
+    _log_entry({
+        "event": "daemon_start",
+        "agent": config["agent_name"],
+        "interval": args.interval,
+        "session_zero": session_zero,
+    })
 
     try:
         while True:
