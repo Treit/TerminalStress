@@ -54,6 +54,17 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 LOG_DIR = REPO_ROOT / "src" / "monkey_logs"
 LOG_FILE = LOG_DIR / "daemon.jsonl"
 
+# GroupMe rejects messages over 1000 characters
+GROUPME_CHAR_LIMIT = 1000
+
+
+def _shorten_for_groupme(text: str, limit: int = GROUPME_CHAR_LIMIT) -> str:
+    """Truncate text to fit within GroupMe's character limit."""
+    if len(text) <= limit:
+        return text
+    suffix = "\n\n…[truncated — full reply was too long for GroupMe]"
+    return text[: limit - len(suffix)] + suffix
+
 
 def _find_copilot() -> str | None:
     """Find the GitHub Copilot CLI executable.
@@ -322,6 +333,24 @@ def _dispatch_directive(directive: dict, copilot_path: str, dry_run: bool = Fals
                         "message_id": message_id,
                         "chars": len(reply_text),
                     })
+                elif len(reply_text) > GROUPME_CHAR_LIMIT:
+                    # Auto-shorten and retry when the message was too long
+                    short = _shorten_for_groupme(reply_text)
+                    print(f"  Reply too long ({len(reply_text)} chars), retrying shortened ({len(short)} chars)")
+                    ok2 = groupme_post(short)
+                    if ok2:
+                        print(f"  Posted shortened reply ({len(short)} chars)")
+                        _log_entry({
+                            "event": "reply_posted",
+                            "message_id": message_id,
+                            "chars": len(short),
+                            "original_chars": len(reply_text),
+                            "shortened": True,
+                        })
+                    else:
+                        print("  warning: shortened reply also failed")
+                        _log_entry({"event": "reply_post_failed", "message_id": message_id,
+                                    "chars": len(reply_text), "shortened_retry": True})
                 else:
                     print("  warning: reply post failed")
                     _log_entry({"event": "reply_post_failed", "message_id": message_id})
