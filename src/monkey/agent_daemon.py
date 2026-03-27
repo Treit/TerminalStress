@@ -49,6 +49,14 @@ if str(_SRC_DIR) not in sys.path:
 
 from monkey.agent_inbox import _get_config, get_all_directives
 from monkey.notify_groupme import post as groupme_post
+from monkey.task_tracker import (
+    track_accepted,
+    track_dispatched,
+    track_completed,
+    track_failed,
+    get_orphaned_tasks,
+    clear_all_orphaned,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 LOG_DIR = REPO_ROOT / "src" / "monkey_logs"
@@ -214,6 +222,9 @@ def _dispatch_directive(directive: dict, copilot_path: str, dry_run: bool = Fals
             print(f"  [dry-run] Would post: {quick_response[:80]}")
         return
 
+    # Track task acceptance before dispatching
+    track_accepted(message_id, sender, instruction)
+
     # Complex directive — spawn a full copilot session
     _log_entry({
         "event": "dispatch",
@@ -240,8 +251,11 @@ def _dispatch_directive(directive: dict, copilot_path: str, dry_run: bool = Fals
 
     if dry_run:
         print(f"  [dry-run] Would launch: copilot -p \"{instruction[:60]}...\"")
+        track_completed(message_id)
         return
 
+    # Mark task as dispatched to copilot
+    track_dispatched(message_id)
     start = time.time()
     try:
         # Clean env — uv run injects NODE_OPTIONS=--no-warnings which breaks copilot
@@ -306,6 +320,7 @@ def _dispatch_directive(directive: dict, copilot_path: str, dry_run: bool = Fals
             elapsed = round(time.time() - start, 1)
             print(f"  Timed out after {elapsed}s")
             _log_entry({"event": "timeout", "message_id": message_id, "elapsed_seconds": elapsed})
+            track_failed(message_id, "timed out after 60 minutes")
             groupme_post("🤖 Timed out (60 min limit) — directive was too complex for one shot.")
             return
 
@@ -324,6 +339,7 @@ def _dispatch_directive(directive: dict, copilot_path: str, dry_run: bool = Fals
 
         if proc.returncode == 0:
             print(f"  Completed in {elapsed}s (exit 0)")
+            track_completed(message_id)
             if reply_text:
                 ok = groupme_post(reply_text)
                 if ok:
@@ -359,11 +375,13 @@ def _dispatch_directive(directive: dict, copilot_path: str, dry_run: bool = Fals
                 _log_entry({"event": "reply_missing", "message_id": message_id})
         else:
             print(f"  Failed in {elapsed}s (exit {proc.returncode})")
+            track_failed(message_id, f"exit code {proc.returncode}")
             groupme_post(f"🤖 Hit an issue (exit code {proc.returncode})")
 
     except Exception as exc:
         print(f"  Error: {exc}")
         _log_entry({"event": "error", "message_id": message_id, "error": str(exc)})
+        track_failed(message_id, str(exc))
         groupme_post(f"🤖 Error: {exc}")
     finally:
         prompt_file.unlink(missing_ok=True)
@@ -415,6 +433,60 @@ def main() -> None:
         "interval": args.interval,
         "session_zero": session_zero,
     })
+
+    # Check for orphaned tasks from a previous daemon run
+    orphaned = get_orphaned_tasks()
+    if orphaned:
+        print(f"  ⚠ Found {len(orphaned)} orphaned task(s) from previous run:")
+        orphan_lines = []
+        for task in orphaned:
+            msg_id = task.get("message_id", "?")
+            sender = task.get("sender", "unknown")
+            status = task.get("status", "unknown")
+            instr = task.get("instruction", "")[:100]
+            accepted_at = task.get("accepted_at", "?")
+            print(f"    [{status}] {msg_id} from {sender}: {instr}")
+            orphan_lines.append(
+                f"• [{status}] from {sender} (accepted {accepted_at}): {instr}"
+            )
+        _log_entry({
+            "event": "orphaned_tasks_detected",
+            "count": len(orphaned),
+            "task_ids": [t.get("message_id", "?") for t in orphaned],
+        })
+        # Notify GroupMe about orphaned work
+        orphan_msg = (
+            f"⚠️ Daemon restarted — found {len(orphaned)} orphaned task(s) "
+            f"that didn't complete before the previous shutdown:\n\n"
+            + "\n".join(orphan_lines)
+            + "\n\nThese tasks were lost and may need to be re-sent."
+        )
+        if not args.dry_run:
+            groupme_post(_shorten_for_groupme(orphan_msg))
+        else:
+            print(f"  [dry-run] Would post orphan alert: {orphan_msg[:80]}")
+        clear_all_orphaned()
+        print(f"  ✓ Cleared orphaned task state")
+    else:
+        print(f"  ✓ No orphaned tasks from previous run")
+
+    # Check for orphaned reply files (copilot finished but daemon didn't post)
+    orphaned_replies = list(LOG_DIR.glob("reply_*.txt"))
+    if orphaned_replies:
+        print(f"  ⚠ Found {len(orphaned_replies)} orphaned reply file(s):")
+        for rfile in orphaned_replies:
+            print(f"    {rfile.name}")
+            reply_text = _consume_reply_file(rfile)
+            if reply_text and not args.dry_run:
+                header = "📬 Recovered reply from interrupted session:\n\n"
+                full_msg = header + reply_text
+                groupme_post(_shorten_for_groupme(full_msg))
+                _log_entry({
+                    "event": "orphaned_reply_recovered",
+                    "file": rfile.name,
+                    "chars": len(reply_text),
+                })
+        print(f"  ✓ Processed orphaned reply files")
 
     try:
         while True:
