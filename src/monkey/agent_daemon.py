@@ -33,6 +33,15 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+# In Session 0 (Windows service), stdout/stderr default to cp1252 which can't
+# encode emoji.  Replace un-encodable chars instead of crashing.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(errors="replace")
+        except Exception:
+            pass
+
 # Allow importing sibling modules
 _SRC_DIR = Path(__file__).resolve().parent.parent
 if str(_SRC_DIR) not in sys.path:

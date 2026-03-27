@@ -31,6 +31,15 @@ import sys
 import time
 from pathlib import Path
 
+# In Session 0 (Windows service), stdout/stderr default to cp1252 which can't
+# encode emoji (e.g. 🤦‍♂️).  Replace un-encodable chars instead of crashing.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(errors="replace")
+        except Exception:
+            pass
+
 try:
     from azure.storage.queue import QueueClient
 except ImportError:
