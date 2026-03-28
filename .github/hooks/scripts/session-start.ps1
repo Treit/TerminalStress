@@ -1,24 +1,36 @@
 <#
 .SYNOPSIS
-    Session start hook — ensures the agent daemon is running.
+    Session start hook for TerminalStress.
 .DESCRIPTION
-    Runs automatically at the start of every Copilot CLI session.
-    Checks if agent_daemon.py is already running, starts it if not,
-    and prints recent daemon log entries for visibility.
+    Prints a brief reminder that this repo is monkey/crashdump-focused and
+    shows recent crash dumps and summaries for quick context.
 #>
 
 $repoRoot = git rev-parse --show-toplevel 2>$null
 if (-not $repoRoot) { $repoRoot = $PSScriptRoot -replace '[\\/]\.github[\\/]hooks[\\/]scripts$', '' }
 
-# Ensure daemon
-& "$repoRoot\src\monkey\ensure-daemon.ps1" 2>$null
+Write-Host "TerminalStress session ready - no inbox daemon is managed in this repo." -ForegroundColor DarkGray
 
-# Show recent daemon activity
-$logFile = Join-Path $repoRoot "src\monkey_logs\daemon.jsonl"
-if (Test-Path $logFile) {
-    $recent = Get-Content $logFile -Tail 5 -ErrorAction SilentlyContinue
-    if ($recent) {
-        Write-Host "Recent daemon activity:" -ForegroundColor DarkGray
-        $recent | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
+$crashDir = Join-Path $repoRoot "crashdumps"
+$logDir = Join-Path $repoRoot "src\monkey_logs"
+
+$recentDumps = Get-ChildItem $crashDir -Filter *.dmp -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -First 3
+if ($recentDumps) {
+    Write-Host "Recent crash dumps:" -ForegroundColor DarkGray
+    $recentDumps | ForEach-Object { Write-Host "  $($_.Name)" -ForegroundColor DarkGray }
+}
+
+$recentSummaries = Get-ChildItem $logDir -Filter summary_*.json -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -First 3
+if ($recentSummaries) {
+    Write-Host "Recent summary files:" -ForegroundColor DarkGray
+    $recentSummaries | ForEach-Object { Write-Host "  $($_.Name)" -ForegroundColor DarkGray }
+}
+if (-not $recentDumps -and -not $recentSummaries) {
+    Write-Host "No recent crash dumps or summaries found." -ForegroundColor DarkGray
+}
     }
 }

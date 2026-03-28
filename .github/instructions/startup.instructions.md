@@ -1,20 +1,15 @@
 # Session Startup
 
-At the **very start of every session**, before doing anything else, run:
+`TerminalStress` no longer owns an inbox daemon or queue workflow.
+
+Do **not** run `ensure-daemon.ps1`, `agent_inbox.py`, or other retired
+Agent Inbox helpers in this repo.
+
+Start with the user's request. If you need recent context, inspect crash dumps,
+monkey logs, and summary files instead:
 
 ```powershell
-.\src\monkey\ensure-daemon.ps1
+Get-ChildItem crashdumps -Filter *.dmp -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 5
+Get-ChildItem src\monkey_logs -Filter monkey_*.log -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 5
+Get-ChildItem src\monkey_logs -Filter summary_*.json -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 5
 ```
-
-This checks if the agent daemon is running and starts it if not. The daemon
-handles incoming GroupMe directives in the background by spawning separate
-Copilot CLI sessions, so your interactive session stays responsive.
-
-After running the startup script, check the daemon log for any recent
-background activity:
-
-```powershell
-Get-Content src\monkey_logs\daemon.jsonl -Tail 10 -ErrorAction SilentlyContinue
-```
-
-Then proceed with whatever task the user requested.
