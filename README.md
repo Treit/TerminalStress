@@ -14,17 +14,31 @@ dotnet run --project src/TerminalStress.csproj
 dotnet run --project src/TerminalStress.csproj -- anyarg
 ```
 
-## Agent Daemon
+## Legacy Agent Daemon
 
-The monkey stress tester includes an agent daemon (`src/monkey/agent_daemon.py`) that polls a GroupMe inbox queue and dispatches directives to the Copilot CLI. To start it manually:
+The old in-repo daemon (`src/monkey/agent_daemon.py`) is intentionally
+disabled so Copilot sessions do not accidentally launch it while working in
+this repo. The standalone `agentinbox` project now owns background GroupMe
+queue processing.
+
+The guard script below is safe to run, but it will only print guidance:
 
 ```bash
 .\src\monkey\ensure-daemon.ps1
 ```
 
-## Windows Service (Auto-Start on Boot)
+To run the active daemon for TerminalStress directives, use the standalone
+project instead:
 
-A .NET 8 Windows service ensures the agent daemon survives reboots. The service launches `agent_daemon.py` using the repo's `.venv`, monitors the process, and restarts it on crash.
+```powershell
+C:\Users\randy\Git\agentinbox\.venv\Scripts\python.exe -m agentinbox daemon --agent-name stressbot --working-directory "C:\Users\randy\Git\TerminalStress"
+```
+
+## Legacy Windows Service
+
+Any old TerminalStress-specific service that launches `src\monkey\agent_daemon.py`
+should be considered retired and replaced by the standalone `agentinbox`
+service/daemon flow.
 
 ### Install
 

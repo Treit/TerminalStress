@@ -33,6 +33,18 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+if __name__ == "__main__" and os.environ.get("TERMINALSTRESS_ENABLE_LEGACY_DAEMON") != "1":
+    print(
+        "error: src\\monkey\\agent_daemon.py is retired.\n"
+        "Use the standalone agentinbox daemon instead, for example:\n"
+        "  C:\\Users\\randy\\Git\\agentinbox\\.venv\\Scripts\\python.exe -m agentinbox daemon "
+        '--agent-name stressbot --working-directory "C:\\Users\\randy\\Git\\TerminalStress"\n'
+        "If you intentionally need the retired daemon, set "
+        "TERMINALSTRESS_ENABLE_LEGACY_DAEMON=1 first.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
 # In Session 0 (Windows service), stdout/stderr default to cp1252 which can't
 # encode emoji.  Replace un-encodable chars instead of crashing.
 for _stream in (sys.stdout, sys.stderr):

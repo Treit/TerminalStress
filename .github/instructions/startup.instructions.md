@@ -6,15 +6,14 @@ At the **very start of every session**, before doing anything else, run:
 .\src\monkey\ensure-daemon.ps1
 ```
 
-This checks if the agent daemon is running and starts it if not. The daemon
-handles incoming GroupMe directives in the background by spawning separate
-Copilot CLI sessions, so your interactive session stays responsive.
+This is now a guard script only. It intentionally does **not** start the
+retired in-repo daemon (`src\monkey\agent_daemon.py`), because the standalone
+`agentinbox` project owns background inbox processing now.
 
-After running the startup script, check the daemon log for any recent
-background activity:
+After running the startup script, check the inbox with `uv`:
 
 ```powershell
-Get-Content src\monkey_logs\daemon.jsonl -Tail 10 -ErrorAction SilentlyContinue
+uv run python src/monkey/agent_inbox.py
 ```
 
 Then proceed with whatever task the user requested.

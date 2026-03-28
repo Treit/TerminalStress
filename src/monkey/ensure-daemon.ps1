@@ -1,35 +1,31 @@
 <#
 .SYNOPSIS
-    Ensures the agent daemon is running. Starts it if not.
+    Guard script for the retired TerminalStress agent daemon.
 .DESCRIPTION
-    Checks if agent_daemon.py is already running. If not, launches it
-    as a detached background process in a visible conhost window.
-    Safe to call multiple times — it's a no-op if already running.
+    The legacy daemon in src\monkey\agent_daemon.py has been replaced by the
+    standalone agentinbox project. This script intentionally does NOT start the
+    legacy daemon so Copilot sessions do not accidentally spawn the wrong
+    background worker while operating inside the TerminalStress repo.
+
+    Set TERMINALSTRESS_ENABLE_LEGACY_DAEMON=1 only if you explicitly need to
+    run the retired daemon for a one-off migration/debug session.
 #>
 
-$daemonScript = Join-Path $PSScriptRoot "agent_daemon.py"
-$python = "C:\Users\randy\AppData\Local\Programs\Python\Python313\python.exe"
+$running = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -like '*src\monkey\agent_daemon.py*' }
 
-if (-not (Test-Path $python)) {
-    $python = (Get-Command python -ErrorAction SilentlyContinue).Source
-}
-
-if (-not $python) {
-    Write-Host "warning: python not found, cannot start daemon" -ForegroundColor Yellow
+if ($env:TERMINALSTRESS_ENABLE_LEGACY_DAEMON -eq "1") {
+    Write-Host "warning: legacy TerminalStress daemon override enabled." -ForegroundColor Yellow
+    Write-Host "Run the retired daemon manually if you really need it:" -ForegroundColor Yellow
+    Write-Host "  uv run python src\monkey\agent_daemon.py" -ForegroundColor Yellow
     return
 }
 
-# Check if already running
-$running = Get-Process python* -ErrorAction SilentlyContinue |
-    Where-Object { $_.CommandLine -match 'agent_daemon' }
+Write-Host "Legacy TerminalStress daemon is disabled." -ForegroundColor Yellow
+Write-Host "Use the standalone agentinbox daemon instead." -ForegroundColor Yellow
+Write-Host "Example:" -ForegroundColor Yellow
+Write-Host "  C:\Users\randy\Git\agentinbox\.venv\Scripts\python.exe -m agentinbox daemon --agent-name stressbot --working-directory `"$((Split-Path -Parent (Split-Path -Parent $PSScriptRoot)))`"" -ForegroundColor Yellow
 
 if ($running) {
-    Write-Host "Agent daemon already running (PID $($running.Id -join ', '))" -ForegroundColor Green
-    return
+    Write-Host "Running legacy daemon PID(s): $($running.ProcessId -join ', ')" -ForegroundColor Yellow
 }
-
-# Start in a new conhost window so it survives and is visible
-$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-Write-Host "Starting agent daemon..." -ForegroundColor Cyan
-Start-Process conhost.exe -ArgumentList "cmd /k `"cd /d $repoRoot && `"$python`" src\monkey\agent_daemon.py`""
-Write-Host "Agent daemon started in new window" -ForegroundColor Green

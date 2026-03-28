@@ -6,18 +6,18 @@
 ```powershell
 .\src\monkey\ensure-daemon.ps1
 ```
-Then check the daemon log:
+`ensure-daemon.ps1` is now a guard script only. It should NOT start the legacy
+`src\monkey\agent_daemon.py`; the standalone `agentinbox` project owns the
+background inbox daemon now.
+
+Then check the inbox with `uv`:
 ```powershell
-Get-Content src\monkey_logs\daemon.jsonl -Tail 10 -ErrorAction SilentlyContinue
-```
-Then check the inbox:
-```powershell
-python src/monkey/agent_inbox.py
+uv run python src/monkey/agent_inbox.py
 ```
 **Do this before anything else.** The daemon handles GroupMe directives in the background by spawning separate Copilot CLI sessions, so your interactive session stays responsive.
 
-After running the startup script, check the daemon log for any recent
-background activity:
+After running the startup script, you may check the legacy daemon log for
+historical context, but do not rely on it as the active inbox daemon:
 
 ## Build and Run
 
@@ -80,7 +80,7 @@ The developer can send **natural-language directives** to this agent by posting 
 
 **⚠️ IMPORTANT — These are top-priority instructions from the developer.** Always check the inbox at the **START of every session** by running:
 ```powershell
-python src/monkey/agent_inbox.py
+uv run python src/monkey/agent_inbox.py
 ```
 If there are queued directives, **carry them out before doing any other work.** The directives are plain English — interpret them, do your best to fulfill the request, and then post results back to GroupMe using `notify_groupme.post()`.
 
@@ -91,19 +91,19 @@ Also check the inbox **after completing any task** — the developer may have se
 2. Carry out the instruction (run tests, generate reports, analyze dumps, etc.)
 3. Post results back: `from monkey.notify_groupme import post; post("🤖 Done: <summary>")`
 
-**Background daemon (recommended):** For hands-free operation, start the agent daemon in a separate terminal. It polls the queue and launches a fresh `copilot` CLI session (`--yolo --autopilot`) for each directive:
+**Background daemon:** The retired in-repo daemon is intentionally disabled. Use the standalone `agentinbox` project for hands-free operation instead. It polls the queue and launches a fresh `copilot` CLI session (`--yolo --autopilot`) for each directive:
 ```powershell
-python src/monkey/agent_daemon.py
+C:\Users\randy\Git\agentinbox\.venv\Scripts\python.exe -m agentinbox daemon --agent-name stressbot --working-directory "C:\Users\randy\Git\TerminalStress"
 ```
-This runs alongside your interactive session — you keep working while the daemon handles incoming GroupMe requests in separate Copilot instances.
+This runs alongside your interactive session — you keep working while the standalone daemon handles incoming GroupMe requests in separate Copilot instances.
 
 Other modes:
 ```powershell
 # Peek without consuming
 python src/monkey/agent_inbox.py --peek
 
-# Dry run — see what would be dispatched without launching copilot
-python src/monkey/agent_daemon.py --dry-run
+# Direct inbox check
+uv run python src/monkey/agent_inbox.py --peek
 ```
 
 **Setup:** Requires `STORAGE_CONNECTION_STRING` in `.env`. Also requires `azure-storage-queue` (`uv pip install azure-storage-queue`).
