@@ -42,6 +42,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 try:
     from azure.storage.queue import QueueClient
+    from azure.core.exceptions import ResourceNotFoundError
 except ImportError:
     # Try to install automatically
     import subprocess as _sp
@@ -49,6 +50,7 @@ except ImportError:
     _rc = _sp.call([sys.executable, "-m", "pip", "install", "-q", "azure-storage-queue"])
     if _rc == 0:
         from azure.storage.queue import QueueClient
+        from azure.core.exceptions import ResourceNotFoundError
     else:
         print(
             f"error: azure-storage-queue is required. Install with:\n"
@@ -174,6 +176,18 @@ def _get_queue_client(config: dict) -> QueueClient:
     )
 
 
+def _is_missing_queue_error(exc: Exception) -> bool:
+    """Return True if the exception means the legacy queue does not exist."""
+    if isinstance(exc, ResourceNotFoundError):
+        return True
+    text = str(exc)
+    return (
+        "QueueNotFound" in text
+        or "specified queue does not exist" in text
+        or "does not exist" in text
+    )
+
+
 def peek_messages(config: dict, max_messages: int = 5) -> list[dict]:
     """Peek at messages without consuming them."""
     client = _get_queue_client(config)
@@ -289,31 +303,40 @@ def main() -> None:
     config = _get_config()
     print(f"Agent: {config['agent_name']}  Queue: {config['queue_name']}")
 
-    if args.peek:
-        messages = peek_messages(config)
-        if not messages:
-            print("Queue is empty.")
-        else:
-            print(f"{len(messages)} message(s):")
-            for m in messages:
-                if m["parsed"]:
-                    sender = m["parsed"].get("sender", {}).get("name", "?")
-                    text = m["parsed"].get("message", {}).get("text", "")[:100]
-                    print(f"  [{sender}] {text}")
-                else:
-                    print(f"  [unparseable] {m['raw']}")
-        return
+    try:
+        if args.peek:
+            messages = peek_messages(config)
+            if not messages:
+                print("Queue is empty.")
+            else:
+                print(f"{len(messages)} message(s):")
+                for m in messages:
+                    if m["parsed"]:
+                        sender = m["parsed"].get("sender", {}).get("name", "?")
+                        text = m["parsed"].get("message", {}).get("text", "")[:100]
+                        print(f"  [{sender}] {text}")
+                    else:
+                        print(f"  [unparseable] {m['raw']}")
+            return
 
-    if args.poll:
-        poll_loop(config, interval=args.interval)
-    else:
-        directives = get_all_directives(config)
-        if not directives:
-            print("No pending directives.")
+        if args.poll:
+            poll_loop(config, interval=args.interval)
         else:
-            print(f"Received {len(directives)} directive(s):")
-            for d in directives:
-                print(f"  [{d['sender_name']}] {d['instruction']}")
+            directives = get_all_directives(config)
+            if not directives:
+                print("No pending directives.")
+            else:
+                print(f"Received {len(directives)} directive(s):")
+                for d in directives:
+                    print(f"  [{d['sender_name']}] {d['instruction']}")
+    except Exception as exc:
+        if _is_missing_queue_error(exc):
+            print(
+                f"Legacy inbox queue '{config['queue_name']}' not found; "
+                "skipping startup inbox check."
+            )
+            return
+        raise
 
 
 if __name__ == "__main__":
