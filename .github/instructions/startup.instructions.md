@@ -1,19 +1,15 @@
 # Session Startup
 
-At the **very start of every session**, before doing anything else, run:
+`TerminalStress` no longer owns an inbox daemon or queue workflow.
+
+Do **not** run `ensure-daemon.ps1`, `agent_inbox.py`, or other retired
+Agent Inbox helpers in this repo.
+
+Start with the user's request. If you need recent context, inspect crash dumps,
+monkey logs, and summary files instead:
 
 ```powershell
-.\src\monkey\ensure-daemon.ps1
+Get-ChildItem crashdumps -Filter *.dmp -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 5
+Get-ChildItem src\monkey_logs -Filter monkey_*.log -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 5
+Get-ChildItem src\monkey_logs -Filter summary_*.json -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 5
 ```
-
-This is now a guard script only. It intentionally does **not** start the
-retired in-repo daemon (`src\monkey\agent_daemon.py`), because the standalone
-`agentinbox` project owns background inbox processing now.
-
-After running the startup script, check the inbox with `uv`:
-
-```powershell
-uv run python src/monkey/agent_inbox.py
-```
-
-Then proceed with whatever task the user requested.
