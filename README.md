@@ -1,106 +1,92 @@
 # TerminalStress
-A small application to stress test Windows Terminal
 
-## Build & Run
+`TerminalStress` is a monkey-testing and crash-analysis repo for Windows
+Terminal. It focuses on:
 
-```bash
-# Build
-dotnet build src/TerminalStress.sln
+- running aggressive monkey scenarios against Windows Terminal
+- collecting crash dumps and health summaries
+- analyzing crash patterns
+- publishing crash reports to `rtreit.com`
 
-# Run (UTF-8 mode, default)
-dotnet run --project src/TerminalStress.csproj
+Remote control and GroupMe-driven agent execution now live in the standalone
+`agentinbox` project, not in this repo.
 
-# Run (UTF-7 mode, triggered by passing any argument)
-dotnet run --project src/TerminalStress.csproj -- anyarg
-```
-
-## Agent Daemon
-
-The monkey stress tester includes an agent daemon (`src/monkey/agent_daemon.py`) that polls a GroupMe inbox queue and dispatches directives to the Copilot CLI. To start it manually:
-
-```bash
-.\src\monkey\ensure-daemon.ps1
-```
-
-## Windows Service (Auto-Start on Boot)
-
-A .NET 8 Windows service ensures the agent daemon survives reboots. The service launches `agent_daemon.py` using the repo's `.venv`, monitors the process, and restarts it on crash.
-
-### Install
+## Build and Run
 
 ```powershell
-# Publish (from repo root)
-cd src\service
-dotnet publish -c Release -o ..\..\publish\service
+# Build the console app
+dotnet build src\TerminalStress.sln
 
-# Install the service (requires admin/elevated shell)
-StressBotService install
+# Run the console stress app directly
+dotnet run --project src\TerminalStress.csproj
 
-# Start it now
-StressBotService start
+# Run with UTF-7 output mode
+dotnet run --project src\TerminalStress.csproj -- anyarg
 ```
 
-### Manage
+## Monkey Runner
+
+For real stress runs, prefer the helper that launches in a visible
+`conhost.exe` window:
 
 ```powershell
-StressBotService status              # Show service status and config summary
-StressBotService stop                # Stop the service
-StressBotService start               # Start the service
-StressBotService uninstall           # Remove the service
+src\monkey\run_monkey.cmd --duration 600 --launch --action-profile buffer-chaos
 ```
 
-### Configure
-
-Configuration lives in `stressbot-service.json` next to the published exe.
+You can also invoke the Python runner directly:
 
 ```powershell
-StressBotService config show                          # View current config
-StressBotService config set arguments "--interval 15" # Pass args to daemon
-StressBotService config set restartDelaySeconds 10    # Change restart delay
-StressBotService config set enabled false             # Disable without uninstalling
-StressBotService config reset                         # Reset to defaults
+Set-Location src
+uv run python -m monkey.runner --duration 300 --launch
+uv run python -m monkey.runner --duration 3600 --action-profile scroll-race
+uv run python -m monkey.runner --duration 0 --instances 4 --action-profile novelty-hunt
 ```
 
-Key config options:
+Monkey run logs and summaries are written under `src\monkey_logs\`.
 
-| Key | Default | Description |
-|-----|---------|-------------|
-| `pythonPath` | `.venv\Scripts\python.exe` | Python interpreter (relative to workingDirectory) |
-| `scriptPath` | `src\monkey\agent_daemon.py` | Daemon script path |
-| `workingDirectory` | Repo root | Working directory for the daemon |
-| `arguments` | `""` | Extra args passed to agent_daemon.py |
-| `restartOnCrash` | `true` | Auto-restart on unexpected exit |
-| `restartDelaySeconds` | `5` | Delay before restart |
-| `maxRestarts` | `10` | Max restarts within the window |
-| `maxRestartWindowMinutes` | `60` | Restart counting window |
-| `extraPath` | `""` | Extra PATH entries (needed for copilot CLI) |
-| `enabled` | `true` | Master on/off switch |
+## Crash Analysis
 
-### Logs
+```powershell
+# Analyze recent crash dumps and summaries
+src\monkey\analyze-crashes.ps1
 
-The service redirects daemon stdout/stderr to `src/monkey_logs/`:
-- `service_stdout.log` — daemon stdout
-- `service_stderr.log` — daemon stderr
-- `daemon.jsonl` — structured daemon event log (written by the daemon itself)
+# Generate an HTML crash report from collected dumps and summaries
+uv run python src\monkey\generate_crash_report.py
+```
+
+Crash dumps live in `crashdumps\`. Structured analysis output is written under
+`crashdumps\.analysis\`.
+
+## Report Upload
+
+TerminalStress still supports publishing crash analysis reports to
+`rtreit.com`:
+
+```powershell
+uv run python src\monkey\upload_report.py crashdumps\crash-analysis-report.html
+uv run python src\monkey\upload_report.py crashdumps\crash-analysis-report.html --name "overnight-crashes.html"
+```
+
+Set `RTREIT_REPORTS_API_KEY` in a local `.env` file or environment variable.
 
 ## Web Dashboard
 
-A real-time monitoring dashboard with live log streaming, charts, and status panels.
+The dashboard is focused on monkey telemetry, crash inventory, campaigns, and
+summary history.
 
-```bash
-# Install dependencies (once)
-uv pip install fastapi uvicorn[standard] aiofiles
+```powershell
+# Install dashboard dependencies if needed
+uv pip install fastapi uvicorn[standard]
 
 # Launch the dashboard
-python src/dashboard/server.py
+uv run python src\dashboard\server.py
 ```
 
-Open [http://localhost:8420](http://localhost:8420) in your browser.
+Open `http://localhost:8420` in your browser.
 
-**Features:**
-- Live daemon log stream (Server-Sent Events) with color-coded event tags
-- Inbox directives table — sender, instruction, status, response time
-- Chart.js visualizations — action distribution, memory usage, crash timeline, directive response times
-- Crash dump inventory and campaign history
-- Stress test results table with leak detection
-- Auto-refreshes every 10 seconds
+## Remote Control
+
+If you want to drive TerminalStress through chat/queues/agents, use the
+standalone `agentinbox` project externally and point it at this repo's working
+directory. TerminalStress itself no longer owns inbox, daemon, or Windows
+service functionality.

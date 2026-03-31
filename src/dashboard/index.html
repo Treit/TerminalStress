@@ -3,261 +3,214 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>StressBot Dashboard</title>
+<title>TerminalStress Dashboard</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 <style>
-/* ======== Reset & Base ======== */
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+* { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
-  --bg: #0d1117; --bg-card: #161b22; --bg-card-hover: #1c2333;
-  --border: #30363d; --text: #e6edf3; --text-dim: #8b949e;
-  --accent: #58a6ff; --green: #3fb950; --red: #f85149;
-  --orange: #d29922; --purple: #bc8cff; --cyan: #39d2c0;
+  --bg: #0d1117;
+  --bg-card: #161b22;
+  --bg-card-hover: #1c2333;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text-dim: #8b949e;
+  --accent: #58a6ff;
+  --green: #3fb950;
+  --red: #f85149;
+  --orange: #d29922;
+  --purple: #bc8cff;
+  --cyan: #39d2c0;
   --font-mono: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
   --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 body {
-  background: var(--bg); color: var(--text); font-family: var(--font-sans);
-  line-height: 1.5; overflow-x: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  line-height: 1.5;
+  overflow-x: hidden;
 }
-a { color: var(--accent); text-decoration: none; }
-
-/* ======== Layout ======== */
 .header {
   background: linear-gradient(135deg, #161b22 0%, #1a1f2e 100%);
   border-bottom: 1px solid var(--border);
-  padding: 16px 24px; display: flex; align-items: center; gap: 16px;
-  position: sticky; top: 0; z-index: 100; backdrop-filter: blur(10px);
+  padding: 16px 24px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  position: sticky;
+  top: 0;
+  z-index: 100;
 }
-.header h1 { font-size: 20px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.header h1 {
+  font-size: 20px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .header .logo { font-size: 28px; }
 .header .status-pills { display: flex; gap: 8px; margin-left: auto; }
 .pill {
-  padding: 4px 12px; border-radius: 16px; font-size: 12px; font-weight: 500;
+  padding: 4px 12px;
+  border-radius: 16px;
+  font-size: 12px;
+  font-weight: 500;
   font-family: var(--font-mono);
 }
-.pill.green { background: rgba(63,185,80,0.15); color: var(--green); border: 1px solid rgba(63,185,80,0.3); }
-.pill.red { background: rgba(248,81,73,0.15); color: var(--red); border: 1px solid rgba(248,81,73,0.3); }
-.pill.orange { background: rgba(210,153,34,0.15); color: var(--orange); border: 1px solid rgba(210,153,34,0.3); }
-
+.pill.green {
+  background: rgba(63,185,80,0.15);
+  color: var(--green);
+  border: 1px solid rgba(63,185,80,0.3);
+}
+.pill.orange {
+  background: rgba(210,153,34,0.15);
+  color: var(--orange);
+  border: 1px solid rgba(210,153,34,0.3);
+}
 .grid {
-  display: grid; gap: 16px; padding: 16px 24px;
+  display: grid;
+  gap: 16px;
+  padding: 16px 24px;
   grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
 }
 .grid-full { grid-column: 1 / -1; }
-
-/* ======== Cards ======== */
 .card {
-  background: var(--bg-card); border: 1px solid var(--border);
-  border-radius: 8px; overflow: hidden;
-  transition: border-color 0.2s;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
 }
 .card:hover { border-color: #484f58; }
 .card-header {
-  padding: 12px 16px; border-bottom: 1px solid var(--border);
-  display: flex; align-items: center; gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 8px;
   background: rgba(22, 27, 34, 0.8);
 }
 .card-header h2 { font-size: 14px; font-weight: 600; }
 .card-header .icon { font-size: 16px; }
 .card-header .badge {
-  margin-left: auto; background: rgba(88,166,255,0.15);
-  color: var(--accent); padding: 2px 8px; border-radius: 10px;
-  font-size: 11px; font-family: var(--font-mono);
+  margin-left: auto;
+  background: rgba(88,166,255,0.15);
+  color: var(--accent);
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-family: var(--font-mono);
 }
 .card-body { padding: 16px; }
 .card-body.no-pad { padding: 0; }
-
-/* ======== Stats Row ======== */
 .stats-row { display: flex; gap: 16px; flex-wrap: wrap; }
 .stat-box {
-  flex: 1; min-width: 120px; padding: 16px;
-  background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px;
+  flex: 1;
+  min-width: 120px;
+  padding: 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
   text-align: center;
 }
-.stat-box .value { font-size: 32px; font-weight: 700; font-family: var(--font-mono); }
-.stat-box .label { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
-
-/* ======== Log Stream ======== */
-.log-stream {
-  max-height: 400px; overflow-y: auto; font-family: var(--font-mono);
-  font-size: 12px; line-height: 1.8;
+.stat-box .value {
+  font-size: 28px;
+  font-weight: 700;
+  font-family: var(--font-mono);
 }
-.log-stream::-webkit-scrollbar { width: 6px; }
-.log-stream::-webkit-scrollbar-track { background: transparent; }
-.log-stream::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
-.log-entry {
-  padding: 4px 16px; border-bottom: 1px solid rgba(48,54,61,0.5);
-  display: flex; gap: 12px; align-items: baseline;
-  transition: background 0.15s;
+.stat-box .label {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 4px;
 }
-.log-entry:hover { background: var(--bg-card-hover); }
-.log-entry .time { color: var(--text-dim); white-space: nowrap; min-width: 80px; }
-.log-entry .event-tag {
-  padding: 1px 6px; border-radius: 4px; font-size: 10px;
-  font-weight: 600; text-transform: uppercase; min-width: 70px; text-align: center;
-}
-.log-entry .msg { color: var(--text); flex: 1; word-break: break-word; }
-.tag-dispatch { background: rgba(88,166,255,0.2); color: var(--accent); }
-.tag-completed { background: rgba(63,185,80,0.2); color: var(--green); }
-.tag-error, .tag-timeout { background: rgba(248,81,73,0.2); color: var(--red); }
-.tag-daemon_start, .tag-daemon_stop { background: rgba(188,140,255,0.2); color: var(--purple); }
-.tag-reply_posted { background: rgba(57,210,192,0.2); color: var(--cyan); }
-.tag-quick_handle { background: rgba(210,153,34,0.2); color: var(--orange); }
-.tag-raw { background: rgba(139,148,158,0.2); color: var(--text-dim); }
-
-/* ======== Directives Table ======== */
-.dir-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.dir-table th {
-  text-align: left; padding: 8px 12px; color: var(--text-dim);
-  font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;
-  border-bottom: 1px solid var(--border); position: sticky; top: 0;
+.chart-container { position: relative; height: 250px; }
+.table-scroll { max-height: 420px; overflow-y: auto; }
+.data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.data-table th {
+  text-align: left;
+  padding: 8px 12px;
+  color: var(--text-dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
   background: var(--bg-card);
 }
-.dir-table td {
-  padding: 8px 12px; border-bottom: 1px solid rgba(48,54,61,0.4);
+.data-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(48,54,61,0.4);
   vertical-align: top;
 }
-.dir-table tr:hover td { background: var(--bg-card-hover); }
-.dir-table .instruction {
-  max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  cursor: pointer;
-}
-.dir-table .instruction:hover { white-space: normal; color: var(--accent); }
+.data-table tr:hover td { background: var(--bg-card-hover); }
 .status-badge {
-  display: inline-block; padding: 2px 8px; border-radius: 10px;
-  font-size: 11px; font-weight: 600; font-family: var(--font-mono);
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  background: rgba(188,140,255,0.15);
+  color: var(--purple);
 }
-.status-replied { background: rgba(63,185,80,0.15); color: var(--green); }
-.status-completed { background: rgba(88,166,255,0.15); color: var(--accent); }
-.status-running { background: rgba(210,153,34,0.15); color: var(--orange); }
-.status-timeout { background: rgba(248,81,73,0.15); color: var(--red); }
-.status-error { background: rgba(248,81,73,0.15); color: var(--red); }
-.status-quick_handled { background: rgba(188,140,255,0.15); color: var(--purple); }
-
-/* ======== Charts ======== */
-.chart-container { position: relative; height: 250px; }
-
-/* ======== Crash Cards ======== */
-.crash-list { max-height: 350px; overflow-y: auto; }
-.crash-item {
-  padding: 10px 16px; border-bottom: 1px solid rgba(48,54,61,0.5);
-  display: flex; align-items: center; gap: 12px; font-size: 13px;
+.list-pane { max-height: 360px; overflow-y: auto; }
+.list-item {
+  padding: 10px 16px;
+  border-bottom: 1px solid rgba(48,54,61,0.5);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
 }
-.crash-item:hover { background: var(--bg-card-hover); }
-.crash-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--red); flex-shrink: 0; }
-.crash-item .name { flex: 1; font-family: var(--font-mono); font-size: 12px; }
-.crash-item .size { color: var(--text-dim); font-size: 12px; }
-.crash-item .time { color: var(--text-dim); font-size: 11px; }
-
-/* ======== Campaign Cards ======== */
-.campaign-card {
-  padding: 12px 16px; border-bottom: 1px solid rgba(48,54,61,0.5);
+.list-item:hover { background: var(--bg-card-hover); }
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--red);
+  flex-shrink: 0;
 }
-.campaign-card:hover { background: var(--bg-card-hover); }
-.campaign-header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-.campaign-stats { display: flex; gap: 16px; font-size: 12px; color: var(--text-dim); }
-.campaign-stats span { display: flex; align-items: center; gap: 4px; }
-
-/* ======== Empty State ======== */
+.name { flex: 1; font-family: var(--font-mono); font-size: 12px; }
+.meta { color: var(--text-dim); font-size: 12px; }
 .empty-state {
-  padding: 40px; text-align: center; color: var(--text-dim); font-size: 14px;
+  padding: 40px;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 14px;
 }
 .empty-state .icon { font-size: 48px; margin-bottom: 12px; }
-
-/* ======== Tabs ======== */
-.tab-bar { display: flex; gap: 2px; padding: 0 16px; background: rgba(13,17,23,0.5); }
-.tab-btn {
-  padding: 8px 16px; border: none; background: transparent;
-  color: var(--text-dim); font-size: 13px; cursor: pointer;
-  border-bottom: 2px solid transparent; transition: all 0.2s;
-  font-family: var(--font-sans);
-}
-.tab-btn:hover { color: var(--text); }
-.tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
-.tab-content { display: none; }
-.tab-content.active { display: block; }
-
-/* ======== Pulse animation ======== */
-@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
-.pulse { animation: pulse 2s ease-in-out infinite; }
-
-/* ======== Scrollable table wrapper ======== */
-.table-scroll { max-height: 400px; overflow-y: auto; }
-
-/* ======== Footer ======== */
 .footer {
-  padding: 16px 24px; text-align: center; color: var(--text-dim);
-  font-size: 12px; border-top: 1px solid var(--border); margin-top: 16px;
+  padding: 16px 24px;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 12px;
+  border-top: 1px solid var(--border);
+  margin-top: 16px;
 }
 </style>
 </head>
 <body>
 
-<!-- ===== Header ===== -->
 <div class="header">
-  <h1><span class="logo">🐒</span> StressBot Dashboard</h1>
+  <h1><span class="logo">🐒</span> TerminalStress Dashboard</h1>
   <div class="status-pills">
-    <span id="pill-daemon" class="pill orange">● CHECKING...</span>
-    <span id="pill-service" class="pill orange">● CHECKING...</span>
-    <span id="pill-live" class="pill green pulse">◉ LIVE</span>
+    <span class="pill green">MONKEY TELEMETRY</span>
+    <span class="pill orange">CRASH TRIAGE</span>
   </div>
 </div>
 
-<!-- ===== Stats Row ===== -->
 <div class="grid" style="padding-bottom: 0;">
-  <div class="grid-full stats-row" id="stats-row">
-    <div class="stat-box"><div class="value" id="stat-dispatches" style="color:var(--accent)">—</div><div class="label">Dispatches</div></div>
-    <div class="stat-box"><div class="value" id="stat-completions" style="color:var(--green)">—</div><div class="label">Completed</div></div>
-    <div class="stat-box"><div class="value" id="stat-errors" style="color:var(--red)">—</div><div class="label">Errors</div></div>
-    <div class="stat-box"><div class="value" id="stat-crashes" style="color:var(--orange)">—</div><div class="label">Crash Dumps</div></div>
-    <div class="stat-box"><div class="value" id="stat-tests" style="color:var(--purple)">—</div><div class="label">Test Runs</div></div>
-    <div class="stat-box"><div class="value" id="stat-uptime" style="color:var(--cyan)">—</div><div class="label">Daemon Uptime</div></div>
+  <div class="grid-full stats-row">
+    <div class="stat-box"><div class="value" id="stat-tests" style="color:var(--purple)">-</div><div class="label">Test Runs</div></div>
+    <div class="stat-box"><div class="value" id="stat-crashes" style="color:var(--orange)">-</div><div class="label">Crash Dumps</div></div>
+    <div class="stat-box"><div class="value" id="stat-analyses" style="color:var(--cyan)">-</div><div class="label">Analyses</div></div>
+    <div class="stat-box"><div class="value" id="stat-campaigns" style="color:var(--accent)">-</div><div class="label">Campaigns</div></div>
+    <div class="stat-box"><div class="value" id="stat-logs" style="color:var(--green)">-</div><div class="label">Monkey Logs</div></div>
+    <div class="stat-box"><div class="value" id="stat-latest" style="color:var(--text)">-</div><div class="label">Latest Summary</div></div>
   </div>
 </div>
 
-<!-- ===== Main Grid ===== -->
 <div class="grid">
-
-  <!-- Live Log Stream -->
-  <div class="card grid-full">
-    <div class="card-header">
-      <span class="icon">📡</span>
-      <h2>Live Daemon Log</h2>
-      <span class="badge" id="log-count">0 events</span>
-    </div>
-    <div class="card-body no-pad">
-      <div class="log-stream" id="log-stream"></div>
-    </div>
-  </div>
-
-  <!-- Directives -->
-  <div class="card grid-full">
-    <div class="card-header">
-      <span class="icon">📨</span>
-      <h2>Inbox Directives</h2>
-      <span class="badge" id="dir-count">0</span>
-    </div>
-    <div class="card-body no-pad">
-      <div class="table-scroll">
-        <table class="dir-table">
-          <thead>
-            <tr>
-              <th>Status</th>
-              <th>Sender</th>
-              <th>Instruction</th>
-              <th>Elapsed</th>
-              <th>Reply</th>
-              <th>Time</th>
-            </tr>
-          </thead>
-          <tbody id="dir-tbody"></tbody>
-        </table>
-      </div>
-    </div>
-  </div>
-
-  <!-- Charts Row -->
   <div class="card">
     <div class="card-header">
       <span class="icon">📊</span>
@@ -278,7 +231,7 @@ a { color: var(--accent); text-decoration: none; }
     </div>
   </div>
 
-  <div class="card">
+  <div class="card grid-full">
     <div class="card-header">
       <span class="icon">💥</span>
       <h2>Crash Timeline</h2>
@@ -290,27 +243,15 @@ a { color: var(--accent); text-decoration: none; }
 
   <div class="card">
     <div class="card-header">
-      <span class="icon">⏱️</span>
-      <h2>Directive Response Times</h2>
-    </div>
-    <div class="card-body">
-      <div class="chart-container"><canvas id="chart-response"></canvas></div>
-    </div>
-  </div>
-
-  <!-- Crash Dumps -->
-  <div class="card">
-    <div class="card-header">
       <span class="icon">🗃️</span>
       <h2>Crash Dumps</h2>
       <span class="badge" id="crash-count">0</span>
     </div>
     <div class="card-body no-pad">
-      <div class="crash-list" id="crash-list"></div>
+      <div class="list-pane" id="crash-list"></div>
     </div>
   </div>
 
-  <!-- Campaigns -->
   <div class="card">
     <div class="card-header">
       <span class="icon">🎯</span>
@@ -318,11 +259,10 @@ a { color: var(--accent); text-decoration: none; }
       <span class="badge" id="campaign-count">0</span>
     </div>
     <div class="card-body no-pad">
-      <div class="crash-list" id="campaign-list"></div>
+      <div class="list-pane" id="campaign-list"></div>
     </div>
   </div>
 
-  <!-- Stress Test Summaries -->
   <div class="card grid-full">
     <div class="card-header">
       <span class="icon">🧪</span>
@@ -331,7 +271,7 @@ a { color: var(--accent); text-decoration: none; }
     </div>
     <div class="card-body no-pad">
       <div class="table-scroll">
-        <table class="dir-table">
+        <table class="data-table">
           <thead>
             <tr>
               <th>Profile</th>
@@ -350,38 +290,51 @@ a { color: var(--accent); text-decoration: none; }
       </div>
     </div>
   </div>
+
+  <div class="card grid-full">
+    <div class="card-header">
+      <span class="icon">📄</span>
+      <h2>Monkey Logs</h2>
+      <span class="badge" id="log-file-count">0</span>
+    </div>
+    <div class="card-body no-pad">
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Filename</th>
+              <th>Size</th>
+              <th>Updated</th>
+            </tr>
+          </thead>
+          <tbody id="log-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
 </div>
 
 <div class="footer">
-  StressBot Dashboard • TerminalStress Project • Auto-refreshes every 10s • <span id="last-update"></span>
+  TerminalStress Dashboard · Monkey runs, crash dumps, and report generation · <span id="last-update"></span>
 </div>
 
 <script>
-// ===== State =====
-let logEntries = [];
 let charts = {};
-const MAX_LOG_ENTRIES = 500;
 
-// ===== Formatters =====
 function timeAgo(iso) {
-  if (!iso) return '—';
+  if (!iso) return '-';
   const d = new Date(iso);
   const s = Math.floor((Date.now() - d) / 1000);
   if (s < 60) return `${s}s ago`;
-  if (s < 3600) return `${Math.floor(s/60)}m ago`;
-  if (s < 86400) return `${Math.floor(s/3600)}h ago`;
-  return `${Math.floor(s/86400)}d ago`;
-}
-
-function shortTime(iso) {
-  if (!iso) return '';
-  return new Date(iso).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
 }
 
 function fmtDuration(sec) {
-  if (sec == null) return '—';
+  if (sec == null) return '-';
   if (sec < 60) return `${Math.round(sec)}s`;
-  return `${Math.floor(sec/60)}m ${Math.round(sec%60)}s`;
+  return `${Math.floor(sec / 60)}m ${Math.round(sec % 60)}s`;
 }
 
 function escHtml(s) {
@@ -390,301 +343,155 @@ function escHtml(s) {
   return d.innerHTML;
 }
 
-// ===== Log Stream =====
-function renderLogEntry(entry) {
-  const ev = entry.event || 'raw';
-  const time = shortTime(entry.timestamp);
-  let msg = '';
-  switch (ev) {
-    case 'dispatch':
-      msg = `<b>${escHtml(entry.sender || '')}</b>: ${escHtml(entry.instruction || '')}`;
-      break;
-    case 'completed':
-      msg = `${escHtml(entry.instruction || entry.message_id || '')} — ${fmtDuration(entry.elapsed_seconds)}, ${entry.reply_chars || 0} chars, exit ${entry.exit_code ?? '?'}`;
-      break;
-    case 'reply_posted':
-      msg = `Reply posted (${entry.chars || 0} chars) for ${entry.message_id || ''}`;
-      break;
-    case 'daemon_start':
-      msg = `Agent <b>${escHtml(entry.agent || '')}</b> started (interval: ${entry.interval || '?'}s)`;
-      break;
-    case 'daemon_stop':
-      msg = 'Daemon stopped';
-      break;
-    case 'timeout':
-      msg = `Timed out after ${fmtDuration(entry.elapsed_seconds)} — ${entry.message_id || ''}`;
-      break;
-    case 'error':
-      msg = `${escHtml(entry.error || entry.message || '')}`;
-      break;
-    case 'quick_handle':
-      msg = `Quick: <b>${escHtml(entry.sender || '')}</b>: ${escHtml(entry.instruction || '')}`;
-      break;
-    default:
-      msg = escHtml(entry.message || JSON.stringify(entry));
-  }
-  return `<div class="log-entry">
-    <span class="time">${time}</span>
-    <span class="event-tag tag-${ev}">${ev}</span>
-    <span class="msg">${msg}</span>
-  </div>`;
-}
-
-function appendLog(entry) {
-  logEntries.push(entry);
-  if (logEntries.length > MAX_LOG_ENTRIES) logEntries.shift();
-  const el = document.getElementById('log-stream');
-  el.insertAdjacentHTML('beforeend', renderLogEntry(entry));
-  // Auto-scroll if near bottom
-  if (el.scrollHeight - el.scrollTop - el.clientHeight < 100) {
-    el.scrollTop = el.scrollHeight;
-  }
-  document.getElementById('log-count').textContent = `${logEntries.length} events`;
-}
-
-// ===== SSE =====
-function connectSSE() {
-  const es = new EventSource('/api/daemon-log/stream');
-  es.onmessage = (e) => {
-    try {
-      const data = JSON.parse(e.data);
-      appendLog(data);
-    } catch {}
-  };
-  es.onerror = () => {
-    document.getElementById('pill-live').className = 'pill red';
-    document.getElementById('pill-live').innerHTML = '○ DISCONNECTED';
-    setTimeout(() => {
-      document.getElementById('pill-live').className = 'pill green pulse';
-      document.getElementById('pill-live').innerHTML = '◉ RECONNECTING...';
-    }, 3000);
-  };
-}
-
-// ===== Data Fetching =====
 async function fetchJSON(url) {
   const r = await fetch(url);
   return r.json();
 }
 
 async function refreshStatus() {
-  try {
-    const s = await fetchJSON('/api/status');
-    document.getElementById('stat-dispatches').textContent = s.daemon.recent_dispatches;
-    document.getElementById('stat-completions').textContent = s.daemon.recent_completions;
-    document.getElementById('stat-errors').textContent = s.daemon.recent_errors;
-    document.getElementById('stat-crashes').textContent = s.crash_dump_count;
-    document.getElementById('stat-tests').textContent = s.summary_count;
-
-    // Daemon pill
-    const dp = document.getElementById('pill-daemon');
-    if (s.daemon.last_start) {
-      dp.className = 'pill green';
-      dp.innerHTML = '● DAEMON UP';
-      const started = new Date(s.daemon.last_start.timestamp);
-      const mins = Math.floor((Date.now() - started) / 60000);
-      document.getElementById('stat-uptime').textContent = mins < 60 ? `${mins}m` : `${Math.floor(mins/60)}h${mins%60}m`;
-    } else {
-      dp.className = 'pill red';
-      dp.innerHTML = '○ DAEMON DOWN';
-      document.getElementById('stat-uptime').textContent = '—';
-    }
-
-    // Service pill
-    const sp = document.getElementById('pill-service');
-    if (s.service.log_exists) {
-      sp.className = 'pill green';
-      sp.innerHTML = '● SERVICE';
-    } else {
-      sp.className = 'pill orange';
-      sp.innerHTML = '○ SERVICE';
-    }
-
-    document.getElementById('last-update').textContent = `Updated ${new Date().toLocaleTimeString()}`;
-  } catch(e) {
-    console.error('Status fetch failed', e);
-  }
-}
-
-async function refreshDirectives() {
-  try {
-    const data = await fetchJSON('/api/directives');
-    const tbody = document.getElementById('dir-tbody');
-    document.getElementById('dir-count').textContent = data.count;
-
-    if (!data.directives.length) {
-      tbody.innerHTML = '<tr><td colspan="6" class="empty-state"><div class="icon">📭</div>No directives yet</td></tr>';
-      return;
-    }
-
-    tbody.innerHTML = data.directives.slice(0, 50).map(d => `
-      <tr>
-        <td><span class="status-badge status-${d.status}">${d.status}</span></td>
-        <td>${escHtml(d.sender || '')}</td>
-        <td class="instruction" title="${escHtml(d.instruction || '')}">${escHtml(d.instruction || '')}</td>
-        <td style="font-family:var(--font-mono);font-size:12px">${fmtDuration(d.elapsed_seconds)}</td>
-        <td style="font-family:var(--font-mono);font-size:12px;color:var(--text-dim)">${d.reply_chars ? d.reply_chars + ' chars' : '—'}</td>
-        <td style="color:var(--text-dim);font-size:12px">${timeAgo(d.dispatched_at)}</td>
-      </tr>
-    `).join('');
-  } catch {}
+  const status = await fetchJSON('/api/status');
+  document.getElementById('stat-tests').textContent = status.summary_count;
+  document.getElementById('stat-crashes').textContent = status.crash_dump_count;
+  document.getElementById('stat-analyses').textContent = status.analysis_count;
+  document.getElementById('stat-campaigns').textContent = status.campaign_count;
+  document.getElementById('stat-logs').textContent = status.monkey_log_count;
+  document.getElementById('stat-latest').textContent = status.latest_summary ? timeAgo(status.latest_summary._mtime) : '-';
+  document.getElementById('last-update').textContent = `Updated ${new Date().toLocaleTimeString()}`;
 }
 
 async function refreshSummaries() {
-  try {
-    const data = await fetchJSON('/api/summaries');
-    const tbody = document.getElementById('summary-tbody');
-    document.getElementById('summary-count').textContent = `${data.count} runs`;
+  const data = await fetchJSON('/api/summaries');
+  const tbody = document.getElementById('summary-tbody');
+  document.getElementById('summary-count').textContent = `${data.count} runs`;
 
-    if (!data.summaries.length) {
-      tbody.innerHTML = '<tr><td colspan="9" class="empty-state"><div class="icon">🧪</div>No test runs yet</td></tr>';
-      return;
-    }
+  if (!data.summaries.length) {
+    tbody.innerHTML = '<tr><td colspan="9" class="empty-state"><div class="icon">🧪</div>No test runs yet</td></tr>';
+    updateCharts([]);
+    return;
+  }
 
-    tbody.innerHTML = data.summaries.map(s => {
-      const crashColor = s.total_crashes > 0 ? 'var(--red)' : 'var(--green)';
-      const leakIcon = s.possible_leak ? '⚠️' : '✅';
-      return `<tr>
-        <td><span class="status-badge" style="background:rgba(188,140,255,0.15);color:var(--purple)">${escHtml(s.action_profile || 'default')}</span></td>
-        <td style="font-family:var(--font-mono);font-size:12px">${fmtDuration(s.duration_seconds)}</td>
-        <td style="font-family:var(--font-mono);font-size:12px">${s.total_actions || 0}</td>
-        <td style="font-family:var(--font-mono);font-size:12px;color:${crashColor}">${s.total_crashes || 0}</td>
-        <td style="font-family:var(--font-mono);font-size:12px">${s.hang_count || 0}</td>
-        <td style="font-family:var(--font-mono);font-size:12px">${(s.peak_rss_mb || 0).toFixed(0)} MB</td>
-        <td style="font-family:var(--font-mono);font-size:12px;color:${(s.memory_growth_mb||0) > 50 ? 'var(--orange)' : 'var(--green)'}">+${(s.memory_growth_mb || 0).toFixed(1)} MB</td>
-        <td>${leakIcon}</td>
-        <td style="color:var(--text-dim);font-size:12px">${timeAgo(s._mtime)}</td>
-      </tr>`;
-    }).join('');
+  tbody.innerHTML = data.summaries.map(s => {
+    const crashColor = s.total_crashes > 0 ? 'var(--red)' : 'var(--green)';
+    const leakIcon = s.possible_leak ? 'WARNING' : 'OK';
+    return `<tr>
+      <td><span class="status-badge">${escHtml(s.action_profile || 'default')}</span></td>
+      <td style="font-family:var(--font-mono);font-size:12px">${fmtDuration(s.duration_seconds)}</td>
+      <td style="font-family:var(--font-mono);font-size:12px">${s.total_actions || 0}</td>
+      <td style="font-family:var(--font-mono);font-size:12px;color:${crashColor}">${s.total_crashes || 0}</td>
+      <td style="font-family:var(--font-mono);font-size:12px">${s.hang_count || 0}</td>
+      <td style="font-family:var(--font-mono);font-size:12px">${(s.peak_rss_mb || 0).toFixed(0)} MB</td>
+      <td style="font-family:var(--font-mono);font-size:12px;color:${(s.memory_growth_mb || 0) > 50 ? 'var(--orange)' : 'var(--green)'}">+${(s.memory_growth_mb || 0).toFixed(1)} MB</td>
+      <td>${leakIcon}</td>
+      <td style="color:var(--text-dim);font-size:12px">${timeAgo(s._mtime)}</td>
+    </tr>`;
+  }).join('');
 
-    // Update charts
-    updateCharts(data.summaries);
-  } catch {}
+  updateCharts(data.summaries);
 }
 
 async function refreshCrashes() {
-  try {
-    const data = await fetchJSON('/api/crashes');
-    document.getElementById('crash-count').textContent = data.dumps.length;
-    const list = document.getElementById('crash-list');
+  const data = await fetchJSON('/api/crashes');
+  document.getElementById('crash-count').textContent = data.dumps.length;
+  const list = document.getElementById('crash-list');
 
-    if (!data.dumps.length) {
-      list.innerHTML = '<div class="empty-state"><div class="icon">🛡️</div>No crash dumps</div>';
-      return;
-    }
+  if (!data.dumps.length) {
+    list.innerHTML = '<div class="empty-state"><div class="icon">🛡️</div>No crash dumps</div>';
+    return;
+  }
 
-    list.innerHTML = data.dumps.map(d => `
-      <div class="crash-item">
-        <div class="crash-dot"></div>
-        <div class="name">${escHtml(d.name)}</div>
-        <div class="size">${d.size_mb} MB</div>
-        <div class="time">${timeAgo(d.mtime)}</div>
-      </div>
-    `).join('');
-  } catch {}
+  list.innerHTML = data.dumps.map(d => `
+    <div class="list-item">
+      <div class="dot"></div>
+      <div class="name">${escHtml(d.name)}</div>
+      <div class="meta">${d.size_mb} MB</div>
+      <div class="meta">${timeAgo(d.mtime)}</div>
+    </div>
+  `).join('');
 }
 
 async function refreshCampaigns() {
-  try {
-    const data = await fetchJSON('/api/campaigns');
-    document.getElementById('campaign-count').textContent = data.count;
-    const list = document.getElementById('campaign-list');
+  const data = await fetchJSON('/api/campaigns');
+  document.getElementById('campaign-count').textContent = data.count;
+  const list = document.getElementById('campaign-list');
 
-    if (!data.campaigns.length) {
-      list.innerHTML = '<div class="empty-state"><div class="icon">🎯</div>No campaigns yet</div>';
-      return;
-    }
+  if (!data.campaigns.length) {
+    list.innerHTML = '<div class="empty-state"><div class="icon">🎯</div>No campaigns yet</div>';
+    return;
+  }
 
-    list.innerHTML = data.campaigns.map(c => {
-      const found = c.found;
-      const icon = found ? '💥' : '✅';
-      const label = found ? 'Crash Found' : 'Clean';
-      return `<div class="campaign-card">
-        <div class="campaign-header">
-          <span>${icon}</span>
-          <span class="status-badge ${found ? 'status-error' : 'status-replied'}">${label}</span>
-          <span style="color:var(--text-dim);font-size:12px;margin-left:auto">${timeAgo(c._mtime)}</span>
-        </div>
-        <div class="campaign-stats">
-          <span>🔁 ${c.iterations || 0} iters</span>
-          <span>🧪 ${c.total_summary_runs || 0} runs</span>
-          <span style="color:var(--red)">💥 ${c.event_crashes || 0} crashes</span>
-          <span>📦 ${c.new_dump_count || 0} dumps</span>
-        </div>
-      </div>`;
-    }).join('');
-  } catch {}
+  list.innerHTML = data.campaigns.map(c => {
+    const found = !!c.found;
+    const label = found ? 'Crash Found' : 'Clean';
+    const labelColor = found ? 'var(--red)' : 'var(--green)';
+    return `
+      <div class="list-item">
+        <div class="dot" style="background:${labelColor}"></div>
+        <div class="name">${label}</div>
+        <div class="meta">${c.iterations || 0} iters</div>
+        <div class="meta">${c.event_crashes || 0} crashes</div>
+        <div class="meta">${timeAgo(c._mtime)}</div>
+      </div>
+    `;
+  }).join('');
 }
 
-async function refreshResponseChart() {
-  try {
-    const data = await fetchJSON('/api/directives');
-    const completed = data.directives.filter(d => d.elapsed_seconds != null).slice(0, 20).reverse();
-    if (!completed.length) return;
+async function refreshMonkeyLogs() {
+  const data = await fetchJSON('/api/monkey-logs');
+  const tbody = document.getElementById('log-tbody');
+  document.getElementById('log-file-count').textContent = data.logs.length;
 
-    const ctx = document.getElementById('chart-response').getContext('2d');
-    if (charts.response) charts.response.destroy();
+  if (!data.logs.length) {
+    tbody.innerHTML = '<tr><td colspan="3" class="empty-state"><div class="icon">📄</div>No monkey logs yet</td></tr>';
+    return;
+  }
 
-    charts.response = new Chart(ctx, {
-      type: 'bar',
-      data: {
-        labels: completed.map((d, i) => shortTime(d.dispatched_at) || `#${i+1}`),
-        datasets: [{
-          label: 'Response Time (s)',
-          data: completed.map(d => d.elapsed_seconds),
-          backgroundColor: completed.map(d =>
-            d.status === 'timeout' ? 'rgba(248,81,73,0.6)' :
-            d.status === 'error' ? 'rgba(248,81,73,0.4)' :
-            'rgba(88,166,255,0.6)'
-          ),
-          borderRadius: 4,
-        }]
-      },
-      options: {
-        responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { display: false } },
-        scales: {
-          x: { ticks: { color: '#8b949e', font: { size: 10 } }, grid: { color: 'rgba(48,54,61,0.5)' } },
-          y: { ticks: { color: '#8b949e' }, grid: { color: 'rgba(48,54,61,0.5)' }, title: { display: true, text: 'seconds', color: '#8b949e' } },
-        }
-      }
-    });
-  } catch {}
+  tbody.innerHTML = data.logs.map(log => `
+    <tr>
+      <td style="font-family:var(--font-mono);font-size:12px">${escHtml(log.name)}</td>
+      <td style="font-family:var(--font-mono);font-size:12px">${log.size_kb} KB</td>
+      <td style="color:var(--text-dim);font-size:12px">${timeAgo(log.mtime)}</td>
+    </tr>
+  `).join('');
 }
 
-// ===== Charts =====
 function updateCharts(summaries) {
   if (!summaries.length) return;
 
-  // Action Distribution (aggregate tag_counts)
   const tagTotals = {};
   summaries.forEach(s => {
-    if (s.tag_counts) {
-      Object.entries(s.tag_counts).forEach(([k,v]) => { tagTotals[k] = (tagTotals[k]||0) + v; });
-    }
+    if (!s.tag_counts) return;
+    Object.entries(s.tag_counts).forEach(([k, v]) => {
+      tagTotals[k] = (tagTotals[k] || 0) + v;
+    });
   });
 
   if (Object.keys(tagTotals).length) {
     const ctx = document.getElementById('chart-actions').getContext('2d');
     if (charts.actions) charts.actions.destroy();
-    const colors = ['#58a6ff','#3fb950','#f85149','#d29922','#bc8cff','#39d2c0','#f0883e','#da3633'];
     const labels = Object.keys(tagTotals);
     charts.actions = new Chart(ctx, {
       type: 'doughnut',
       data: {
         labels,
-        datasets: [{ data: Object.values(tagTotals), backgroundColor: colors.slice(0, labels.length), borderWidth: 0 }]
+        datasets: [{
+          data: Object.values(tagTotals),
+          backgroundColor: ['#58a6ff', '#3fb950', '#f85149', '#d29922', '#bc8cff', '#39d2c0', '#f0883e', '#da3633'],
+          borderWidth: 0,
+        }],
       },
       options: {
-        responsive: true, maintainAspectRatio: false,
+        responsive: true,
+        maintainAspectRatio: false,
         plugins: {
-          legend: { position: 'right', labels: { color: '#e6edf3', font: { size: 11 }, padding: 8 } }
-        }
-      }
+          legend: {
+            position: 'right',
+            labels: { color: '#e6edf3', font: { size: 11 }, padding: 8 },
+          },
+        },
+      },
     });
   }
 
-  // Memory Usage
   const memData = summaries.filter(s => s.peak_rss_mb).slice(0, 15).reverse();
   if (memData.length) {
     const ctx = document.getElementById('chart-memory').getContext('2d');
@@ -692,32 +499,40 @@ function updateCharts(summaries) {
     charts.memory = new Chart(ctx, {
       type: 'line',
       data: {
-        labels: memData.map((s,i) => s.action_profile ? `${s.action_profile} #${i+1}` : `Run #${i+1}`),
+        labels: memData.map((s, i) => s.action_profile ? `${s.action_profile} #${i + 1}` : `Run #${i + 1}`),
         datasets: [
           {
-            label: 'Peak RSS (MB)', data: memData.map(s => s.peak_rss_mb),
-            borderColor: '#f85149', backgroundColor: 'rgba(248,81,73,0.1)',
-            fill: true, tension: 0.3, pointRadius: 4,
+            label: 'Peak RSS (MB)',
+            data: memData.map(s => s.peak_rss_mb),
+            borderColor: '#f85149',
+            backgroundColor: 'rgba(248,81,73,0.1)',
+            fill: true,
+            tension: 0.3,
+            pointRadius: 4,
           },
           {
-            label: 'Initial RSS (MB)', data: memData.map(s => s.initial_rss_mb || 0),
-            borderColor: '#58a6ff', backgroundColor: 'rgba(88,166,255,0.1)',
-            fill: true, tension: 0.3, pointRadius: 4,
-          }
-        ]
+            label: 'Initial RSS (MB)',
+            data: memData.map(s => s.initial_rss_mb || 0),
+            borderColor: '#58a6ff',
+            backgroundColor: 'rgba(88,166,255,0.1)',
+            fill: true,
+            tension: 0.3,
+            pointRadius: 4,
+          },
+        ],
       },
       options: {
-        responsive: true, maintainAspectRatio: false,
+        responsive: true,
+        maintainAspectRatio: false,
         plugins: { legend: { labels: { color: '#e6edf3', font: { size: 11 } } } },
         scales: {
           x: { ticks: { color: '#8b949e', font: { size: 10 } }, grid: { color: 'rgba(48,54,61,0.5)' } },
           y: { ticks: { color: '#8b949e' }, grid: { color: 'rgba(48,54,61,0.5)' }, title: { display: true, text: 'MB', color: '#8b949e' } },
-        }
-      }
+        },
+      },
     });
   }
 
-  // Crash Timeline
   const crashData = summaries.filter(s => s.total_crashes != null).slice(0, 15).reverse();
   if (crashData.length) {
     const ctx = document.getElementById('chart-crashes').getContext('2d');
@@ -725,63 +540,50 @@ function updateCharts(summaries) {
     charts.crashes = new Chart(ctx, {
       type: 'bar',
       data: {
-        labels: crashData.map((s,i) => s.action_profile ? `${s.action_profile}` : `#${i+1}`),
+        labels: crashData.map((s, i) => s.action_profile ? `${s.action_profile}` : `#${i + 1}`),
         datasets: [
           {
-            label: 'Crashes', data: crashData.map(s => s.total_crashes || 0),
-            backgroundColor: 'rgba(248,81,73,0.6)', borderRadius: 4,
+            label: 'Crashes',
+            data: crashData.map(s => s.total_crashes || 0),
+            backgroundColor: 'rgba(248,81,73,0.6)',
+            borderRadius: 4,
           },
           {
-            label: 'Hangs', data: crashData.map(s => s.hang_count || 0),
-            backgroundColor: 'rgba(210,153,34,0.6)', borderRadius: 4,
-          }
-        ]
+            label: 'Hangs',
+            data: crashData.map(s => s.hang_count || 0),
+            backgroundColor: 'rgba(210,153,34,0.6)',
+            borderRadius: 4,
+          },
+        ],
       },
       options: {
-        responsive: true, maintainAspectRatio: false,
+        responsive: true,
+        maintainAspectRatio: false,
         plugins: { legend: { labels: { color: '#e6edf3', font: { size: 11 } } } },
         scales: {
           x: { stacked: true, ticks: { color: '#8b949e', font: { size: 10 } }, grid: { color: 'rgba(48,54,61,0.5)' } },
           y: { stacked: true, ticks: { color: '#8b949e', stepSize: 1 }, grid: { color: 'rgba(48,54,61,0.5)' } },
-        }
-      }
+        },
+      },
     });
   }
 }
 
-// ===== Initial Load =====
-async function loadInitialLogs() {
-  try {
-    const data = await fetchJSON('/api/daemon-log?tail=100');
-    const el = document.getElementById('log-stream');
-    el.innerHTML = data.entries.map(renderLogEntry).join('');
-    logEntries = data.entries;
-    document.getElementById('log-count').textContent = `${logEntries.length} events`;
-    el.scrollTop = el.scrollHeight;
-  } catch {}
-}
-
-// ===== Boot =====
 async function init() {
-  await loadInitialLogs();
-  connectSSE();
   await Promise.all([
     refreshStatus(),
-    refreshDirectives(),
     refreshSummaries(),
     refreshCrashes(),
     refreshCampaigns(),
-    refreshResponseChart(),
+    refreshMonkeyLogs(),
   ]);
 
-  // Auto-refresh every 10s
   setInterval(() => {
     refreshStatus();
-    refreshDirectives();
     refreshSummaries();
     refreshCrashes();
     refreshCampaigns();
-    refreshResponseChart();
+    refreshMonkeyLogs();
   }, 10000);
 }
 

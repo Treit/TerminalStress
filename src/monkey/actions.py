@@ -14,6 +14,7 @@ import random
 import string
 import subprocess
 import time
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -755,17 +756,63 @@ _stress_proc: subprocess.Popen | None = None
 _STRESS_CSPROJ = Path(__file__).parent.parent / "TerminalStress.csproj"
 
 
+def _get_stress_target_framework() -> str | None:
+    """Read the first target framework from the TerminalStress project file."""
+    if not _STRESS_CSPROJ.exists():
+        logger.warning("TerminalStress project file not found at %s", _STRESS_CSPROJ)
+        return None
+
+    try:
+        root = ET.fromstring(_STRESS_CSPROJ.read_text(encoding="utf-8-sig"))
+    except ET.ParseError as exc:
+        logger.warning("Unable to parse %s: %s", _STRESS_CSPROJ, exc)
+        return None
+
+    for tag_name in ("TargetFramework", "TargetFrameworks"):
+        element = root.find(f".//{tag_name}")
+        if element is None or not element.text:
+            continue
+
+        framework = element.text.split(";", 1)[0].strip()
+        if framework:
+            return framework
+
+    logger.warning("No target framework found in %s", _STRESS_CSPROJ)
+    return None
+
+
 def _find_stress_exe() -> str | None:
-    """Find a pre-built TerminalStress.exe under bin/, or None."""
+    """Find a pre-built TerminalStress.exe that matches the project framework."""
     bin_dir = Path(__file__).parent.parent / "bin"
-    matches = list(bin_dir.rglob("TerminalStress.exe")) if bin_dir.exists() else []
-    return str(matches[0]) if matches else None
+    if not bin_dir.exists():
+        return None
+
+    target_framework = _get_stress_target_framework()
+    if not target_framework:
+        return None
+
+    matches = sorted(
+        bin_dir.rglob("TerminalStress.exe"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    for match in matches:
+        if target_framework in match.relative_to(bin_dir).parts:
+            return str(match)
+
+    logger.warning(
+        "No pre-built TerminalStress.exe found for target framework %s under %s",
+        target_framework,
+        bin_dir,
+    )
+    return None
 
 
 def run_terminal_stress(win):
     """
     Launch TerminalStress in the focused pane.
-    Uses the pre-built exe if it exists under bin/, otherwise uses dotnet run.
+    Uses a pre-built exe only when it matches the project target framework,
+    otherwise uses dotnet run.
     Types the command into the current pane and presses Enter.
     """
     global _stress_proc
